@@ -273,15 +273,29 @@ class ModelDownloaderPanel {
 app.registerExtension({
     name: "ComfyUI.ModelDownloader",
     async setup() {
+        console.log("[ComfyUI-ModelDownloader] extension setup starting");
         const panel = new ModelDownloaderPanel();
         await panel.init();
 
-        // Add to the ComfyUI sidebar under "Model Downloader".
-        const parent = document.querySelector(".comfy-menu") || document.body;
+        // Create a floating toggle button that works with both legacy and modern ComfyUI frontends.
         const toggle = document.createElement("button");
+        toggle.id = "cmd-model-downloader-toggle";
         toggle.textContent = "Model Downloader";
-        toggle.className = "comfy-button";
-        toggle.style.marginTop = "4px";
+        toggle.title = "Download models into ComfyUI folders";
+        toggle.style.position = "fixed";
+        toggle.style.top = "12px";
+        toggle.style.right = "12px";
+        toggle.style.zIndex = "10001";
+        toggle.style.padding = "8px 14px";
+        toggle.style.background = "#2d7bf6";
+        toggle.style.color = "#fff";
+        toggle.style.border = "none";
+        toggle.style.borderRadius = "6px";
+        toggle.style.cursor = "pointer";
+        toggle.style.fontFamily = "sans-serif";
+        toggle.style.fontSize = "13px";
+        toggle.style.boxShadow = "0 2px 8px rgba(0,0,0,0.4)";
+
         toggle.addEventListener("click", () => {
             const existing = document.getElementById("cmd-dialog");
             if (existing) {
@@ -291,18 +305,21 @@ app.registerExtension({
             const dialog = document.createElement("div");
             dialog.id = "cmd-dialog";
             dialog.style.position = "fixed";
-            dialog.style.top = "60px";
-            dialog.style.right = "20px";
-            dialog.style.width = "360px";
-            dialog.style.maxHeight = "80vh";
+            dialog.style.top = "52px";
+            dialog.style.right = "12px";
+            dialog.style.width = "380px";
+            dialog.style.maxHeight = "calc(100vh - 72px)";
             dialog.style.overflow = "auto";
-            dialog.style.background = "#111";
+            dialog.style.background = "#1a1a1a";
             dialog.style.border = "1px solid #444";
             dialog.style.borderRadius = "8px";
             dialog.style.zIndex = "10000";
+            dialog.style.boxShadow = "0 4px 16px rgba(0,0,0,0.5)";
             dialog.appendChild(panel.element);
             document.body.appendChild(dialog);
         });
-        parent.appendChild(toggle);
+
+        document.body.appendChild(toggle);
+        console.log("[ComfyUI-ModelDownloader] toggle button added to body");
     },
 });
