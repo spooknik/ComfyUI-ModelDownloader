@@ -60,6 +60,22 @@ If you prefer not to auto-start the service from ComfyUI, set `COMFY_MODEL_DL_ST
 python -m ComfyUI-ModelDownloader.download_service
 ```
 
+## Hugging Face URLs
+
+Paste the repository page link with `/blob/` and the plugin will automatically convert it to the raw `/resolve/` download URL. For example:
+
+```text
+https://huggingface.co/Comfy-Org/Qwen-Image_ComfyUI/blob/main/split_files/diffusion_models/qwen_image_2512_fp8_e4m3fn.safetensors
+```
+
+becomes
+
+```text
+https://huggingface.co/Comfy-Org/Qwen-Image_ComfyUI/resolve/main/split_files/diffusion_models/qwen_image_2512_fp8_e4m3fn.safetensors
+```
+
+If a URL returns an HTML page instead of a binary file, the download will fail with a clear error instead of saving a tiny `.safetensors` HTML file.
+
 ## API endpoints
 
 ### ComfyUI PromptServer routes (recommended)

@@ -122,6 +122,24 @@ class DownloadManager:
             basename = "model.bin"
         return basename
 
+    @staticmethod
+    def _normalize_url(url: str) -> str:
+        """Convert known non-direct URLs to direct download URLs."""
+        from urllib.parse import urlparse, urlunparse
+
+        parsed = urlparse(url)
+        # Hugging Face blob pages -> resolve raw file URL.
+        if parsed.netloc.lower() in ("huggingface.co", "www.huggingface.co"):
+            match = re.match(
+                r"^/([^/]+/[^/]+)/blob/(.*)$",
+                parsed.path,
+            )
+            if match:
+                repo, path_in_repo = match.groups()
+                direct_path = f"/{repo}/resolve/{path_in_repo}"
+                return urlunparse(parsed._replace(path=direct_path))
+        return url
+
     async def start_download(
         self,
         url: str,
@@ -134,6 +152,7 @@ class DownloadManager:
         Returns (entry, success, error_message_or_none).
         """
         url = url.strip()
+        url = self._normalize_url(url)
         folder_name = folder_name.strip()
         custom_filename = (custom_filename or "").strip()
 
@@ -183,6 +202,15 @@ class DownloadManager:
                 async with session.get(entry.url) as response:
                     if response.status >= 400:
                         raise RuntimeError(f"HTTP {response.status}: {response.reason}")
+
+                    content_type = (response.headers.get("Content-Type", "") or "").lower()
+                    # Reject HTML pages (blob pages, login walls, etc.) before writing anything.
+                    if "text/html" in content_type:
+                        raise RuntimeError(
+                            "Server returned an HTML page instead of a binary file. "
+                            "Please use the direct file URL (e.g. Hugging Face /resolve/...)."
+                        )
+
                     content_length = response.headers.get("Content-Length")
                     entry.bytes_total = int(content_length) if content_length else 0
 
