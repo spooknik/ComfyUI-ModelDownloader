@@ -97,8 +97,19 @@ class DownloadManager:
         return candidate
 
     def list_folders(self) -> dict[str, Any]:
+        models_root = self.comfyui_base / "models"
+        # Discover all existing subdirectories under models/.
+        discovered: set[str] = set()
+        if models_root.exists():
+            for child in models_root.iterdir():
+                if child.is_dir():
+                    discovered.add(child.name)
+
+        # Merge with the default/common list, preserving default order first.
+        folder_names = list(dict.fromkeys(self.common_folders + sorted(discovered)))
+
         folders: list[dict[str, Any]] = []
-        for name in self.common_folders:
+        for name in folder_names:
             path = self._resolve_folder(name)
             folders.append({"name": name, "path": str(path), "exists": path.exists()})
         return {"base": str(self.comfyui_base), "folders": folders}

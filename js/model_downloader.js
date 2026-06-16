@@ -281,7 +281,7 @@ app.registerExtension({
         toggle.textContent = "Model Downloader";
         toggle.title = "Download models into ComfyUI folders";
         toggle.style.position = "fixed";
-        toggle.style.top = "12px";
+        toggle.style.top = "3px";
         toggle.style.right = "12px";
         toggle.style.zIndex = "10001";
         toggle.style.padding = "8px 14px";
