@@ -1,12 +1,10 @@
 import { app } from "../../scripts/app.js";
 
-const SERVICE_PORT = 8189;
-const SERVICE_HOST = "127.0.0.1";
+const API_PREFIX = "/api/model-downloader";
 
 function getServiceBaseUrl() {
-    // The service runs on the same host as ComfyUI by default.
-    const protocol = window.location.protocol;
-    return `${protocol}//${SERVICE_HOST}:${SERVICE_PORT}`;
+    // Use the same origin as ComfyUI so remote browser users reach the server.
+    return window.location.origin + API_PREFIX;
 }
 
 async function apiFetch(path, options = {}) {
