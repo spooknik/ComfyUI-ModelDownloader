@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import os
 from pathlib import Path
@@ -98,8 +97,7 @@ def _register_routes() -> None:
         return json_response({"status": "cancellation requested"})
 
     async def api_files(request: web.Request) -> web.Response:
-        loop = asyncio.get_running_loop()
-        data, error = await loop.run_in_executor(None, _DOWNLOAD_MANAGER.list_files, request.query.get("folder", ""))
+        data, error = await _DOWNLOAD_MANAGER.list_files_async(request.query.get("folder", ""))
         if error:
             return json_response({"error": error}, status=error_status(error))
         return json_response(data)
@@ -124,6 +122,50 @@ def _register_routes() -> None:
             return json_response({"error": error}, status=error_status(error))
         return json_response(data, status=201)
 
+    async def api_upload_start(request: web.Request) -> web.Response:
+        import json as _json
+
+        try:
+            payload = await request.json()
+        except _json.JSONDecodeError:
+            return json_response({"error": "Invalid JSON"}, status=400)
+        data, error = _DOWNLOAD_MANAGER.start_upload(
+            folder_name=payload.get("folder", ""),
+            filename=payload.get("filename", ""),
+            total=payload.get("size"),
+            overwrite=bool(payload.get("overwrite")),
+        )
+        if error:
+            return json_response({"error": error}, status=error_status(error))
+        return json_response(data, status=201)
+
+    async def api_upload_status(request: web.Request) -> web.Response:
+        data, error = _DOWNLOAD_MANAGER.get_upload(request.match_info["upload_id"])
+        if error:
+            return json_response({"error": error}, status=error_status(error))
+        return json_response(data)
+
+    async def api_upload_chunk(request: web.Request) -> web.Response:
+        try:
+            offset = int(request.query.get("offset", ""))
+        except ValueError:
+            return json_response({"error": "Invalid offset"}, status=400)
+        data, error = await _DOWNLOAD_MANAGER.upload_chunk(
+            upload_id=request.match_info["upload_id"],
+            offset=offset,
+            chunks=request.content.iter_chunked(1 << 20),
+            expected_size=request.content_length,
+        )
+        if error:
+            return json_response({"error": error, **(data or {})}, status=error_status(error))
+        return json_response(data)
+
+    async def api_upload_abort(request: web.Request) -> web.Response:
+        ok, error = _DOWNLOAD_MANAGER.abort_upload(request.match_info["upload_id"])
+        if not ok:
+            return json_response({"error": error}, status=error_status(error))
+        return json_response({"status": "cancelled"})
+
     prefix = "/api/model-downloader"
     app.router.add_get(f"{prefix}/folders", api_folders)
     app.router.add_get(f"{prefix}/downloads", api_downloads)
@@ -133,6 +175,10 @@ def _register_routes() -> None:
     app.router.add_get(f"{prefix}/files", api_files)
     app.router.add_delete(f"{prefix}/files", api_delete_file)
     app.router.add_post(f"{prefix}/upload", api_upload)
+    app.router.add_post(f"{prefix}/upload/start", api_upload_start)
+    app.router.add_get(f"{prefix}/upload/{{upload_id}}", api_upload_status)
+    app.router.add_post(f"{prefix}/upload/{{upload_id}}/chunk", api_upload_chunk)
+    app.router.add_delete(f"{prefix}/upload/{{upload_id}}", api_upload_abort)
     logger.info("ComfyUI-ModelDownloader routes registered at %s", prefix)
 
 

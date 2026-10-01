@@ -38,6 +38,10 @@ DEFAULT_COMMON_FOLDERS = [
 ]
 
 TEMP_SUFFIX = ".tmp"
+# Chunked upload sessions with no activity for this long are discarded (browser closed mid-upload, etc.).
+UPLOAD_SESSION_TTL = 15 * 60
+# A chunk request that has received no data for this long may be taken over by a retry.
+UPLOAD_CHUNK_STALL_TIMEOUT = 60
 
 
 def error_status(error: str | None) -> int:
@@ -45,7 +49,7 @@ def error_status(error: str | None) -> int:
     msg = (error or "").lower()
     if "not found" in msg:
         return 404
-    if "already exists" in msg or "in progress" in msg or "cannot cancel" in msg:
+    if "already exists" in msg or "in progress" in msg or "cannot cancel" in msg or "mismatch" in msg:
         return 409
     if "disk space" in msg:
         return 507
@@ -87,6 +91,23 @@ class DownloadEntry:
         }
 
 
+@dataclasses.dataclass(slots=True)
+class UploadSession:
+    """A chunked upload: the browser sends the file in pieces, each appended at a known offset."""
+
+    upload_id: str
+    folder: str
+    destination: Path
+    temp: Path
+    total: int
+    received: int = 0
+    busy: bool = False
+    aborted: bool = False
+    generation: int = 0
+    handle: Any = None  # Open temp-file handle of the request currently writing.
+    touched: float = dataclasses.field(default_factory=time.monotonic)
+
+
 class DownloadManager:
     """Handles download state, validation, and async worker execution.
 
@@ -104,6 +125,7 @@ class DownloadManager:
         self.common_folders: list[str] = list(extra_folders or []) + list(DEFAULT_COMMON_FOLDERS)
         self._downloads: dict[str, DownloadEntry] = {}
         self._uploads: set[Path] = set()
+        self._upload_sessions: dict[str, UploadSession] = {}
         self._lock = asyncio.Lock()
 
     def _resolve_folder(self, folder_name: str) -> Path:
@@ -121,8 +143,9 @@ class DownloadManager:
 
     def _active_paths(self) -> set[Path]:
         """Destinations (and their temp files) of in-flight downloads and uploads."""
-        paths = set(self._uploads)
-        paths.update(d.destination for d in self._downloads.values() if d.status in ("pending", "running"))
+        # Snapshot with list(): list_files() calls this from an executor thread.
+        paths = set(list(self._uploads))
+        paths.update(d.destination for d in list(self._downloads.values()) if d.status in ("pending", "running"))
         return paths | {p.with_name(p.name + TEMP_SUFFIX) for p in paths}
 
     def list_folders(self) -> dict[str, Any]:
@@ -370,6 +393,7 @@ class DownloadManager:
         }, None
 
     def delete_file(self, folder_name: str, relative_path: str) -> tuple[bool, str | None]:
+        self.expire_upload_sessions()
         try:
             path = self._resolve_file(folder_name, relative_path)
         except ValueError as exc:
@@ -393,29 +417,11 @@ class DownloadManager:
         expected_size: int | None = None,
         overwrite: bool = False,
     ) -> tuple[dict[str, Any] | None, str | None]:
-        """Stream an uploaded file into a model folder via a temp file, then move it into place."""
+        """Stream an uploaded file in a single request into a model folder via a temp file, then move it into place."""
         folder_name = (folder_name or "").strip()
-        filename = (filename or "").strip()
-        if not folder_name:
-            return None, "Missing folder"
-        if not filename:
-            return None, "Missing filename"
-        try:
-            folder_path = self._resolve_folder(folder_name)
-        except ValueError as exc:
-            return None, f"Invalid folder: {exc}"
-
-        destination = folder_path / self._sanitize_filename(filename)
-        if destination in self._active_paths():
-            return None, "A transfer to this file is already in progress"
-        if destination.exists() and not overwrite:
-            return None, "File already exists. Set overwrite=true to replace."
-
-        folder_path.mkdir(parents=True, exist_ok=True)
-        if expected_size:
-            free = shutil.disk_usage(folder_path).free
-            if expected_size > free:
-                return None, f"Not enough disk space ({expected_size} bytes needed, {free} free)"
+        destination, error = self._prepare_upload(folder_name, filename, overwrite, expected_size)
+        if error:
+            return None, error
 
         temp_destination = destination.with_name(destination.name + TEMP_SUFFIX)
         loop = asyncio.get_running_loop()
@@ -449,6 +455,192 @@ class DownloadManager:
             "destination": str(destination),
             "size": received,
         }, None
+
+    def _prepare_upload(
+        self, folder_name: str, filename: str, overwrite: bool, size: int | None
+    ) -> tuple[Path | None, str | None]:
+        """Validate an upload target and make sure its folder exists. Returns (destination, error)."""
+        filename = (filename or "").strip()
+        if not folder_name:
+            return None, "Missing folder"
+        if not filename:
+            return None, "Missing filename"
+        try:
+            folder_path = self._resolve_folder(folder_name)
+        except ValueError as exc:
+            return None, f"Invalid folder: {exc}"
+
+        destination = folder_path / self._sanitize_filename(filename)
+        if destination in self._active_paths():
+            return None, "A transfer to this file is already in progress"
+        if destination.exists() and not overwrite:
+            return None, "File already exists. Set overwrite=true to replace."
+
+        folder_path.mkdir(parents=True, exist_ok=True)
+        if size:
+            free = shutil.disk_usage(folder_path).free
+            if size > free:
+                return None, f"Not enough disk space ({size} bytes needed, {free} free)"
+        return destination, None
+
+    # ---- Chunked uploads -----------------------------------------------------------------------
+    # Large uploads are sent as a series of smaller requests so a dropped connection or a proxy's
+    # per-request timeout/body limit only costs one chunk, which the browser retries.
+
+    def _drop_upload_session(self, session: UploadSession) -> None:
+        self._upload_sessions.pop(session.upload_id, None)
+        self._uploads.discard(session.destination)
+        try:
+            session.temp.unlink(missing_ok=True)
+        except OSError as exc:
+            logger.warning("Could not remove upload temp file %s: %s", session.temp, exc)
+
+    def expire_upload_sessions(self) -> None:
+        now = time.monotonic()
+        for session in list(self._upload_sessions.values()):
+            if now - session.touched > UPLOAD_SESSION_TTL:
+                logger.info("Discarding abandoned upload of %s", session.destination)
+                self._drop_upload_session(session)
+
+    async def list_files_async(self, folder_name: str) -> tuple[dict[str, Any] | None, str | None]:
+        self.expire_upload_sessions()
+        return await asyncio.get_running_loop().run_in_executor(None, self.list_files, folder_name)
+
+    def start_upload(
+        self, folder_name: str, filename: str, total: int, overwrite: bool = False
+    ) -> tuple[dict[str, Any] | None, str | None]:
+        self.expire_upload_sessions()
+        folder_name = (folder_name or "").strip()
+        if not isinstance(total, int) or total < 0:
+            return None, "Invalid file size"
+        destination, error = self._prepare_upload(folder_name, filename, overwrite, total)
+        if error:
+            return None, error
+
+        session = UploadSession(
+            upload_id=uuid.uuid4().hex,
+            folder=folder_name,
+            destination=destination,
+            temp=destination.with_name(destination.name + TEMP_SUFFIX),
+            total=total,
+        )
+        try:
+            session.temp.write_bytes(b"")
+        except OSError as exc:
+            return None, f"Cannot create file: {exc}"
+        self._upload_sessions[session.upload_id] = session
+        self._uploads.add(destination)
+        return {"upload_id": session.upload_id, "filename": destination.name, "received": 0, "total": total}, None
+
+    def get_upload(self, upload_id: str) -> tuple[dict[str, Any] | None, str | None]:
+        session = self._upload_sessions.get(upload_id)
+        if not session:
+            return None, "Upload session not found (it may have expired)"
+        return {"upload_id": upload_id, "received": session.received, "total": session.total, "busy": session.busy}, None
+
+    async def upload_chunk(
+        self,
+        upload_id: str,
+        offset: int,
+        chunks: AsyncIterable[bytes],
+        expected_size: int | None = None,
+    ) -> tuple[dict[str, Any] | None, str | None]:
+        """Write one chunk at `offset`. On error the returned data still carries the committed `received` count."""
+        session = self._upload_sessions.get(upload_id)
+        error = None
+        if not session:
+            error = "Upload session not found (it may have expired)"
+        elif session.busy and time.monotonic() - session.touched < UPLOAD_CHUNK_STALL_TIMEOUT:
+            error = "A chunk for this upload is already in progress"
+        elif offset != session.received:
+            error = f"Offset mismatch: expected {session.received}, got {offset}"
+        if error:
+            # Drain the body so the client reliably receives this response instead of a connection reset.
+            async for _ in chunks:
+                pass
+            return ({"received": session.received} if session else None), error
+
+        # A busy-but-stalled previous request (connection died silently) is superseded: bumping the
+        # generation stops it from writing or rolling back once it wakes up.
+        session.generation += 1
+        generation = session.generation
+        if session.handle is not None:
+            # Release the stalled request's handle; on Windows it would otherwise block the final rename.
+            session.handle.close()
+            session.handle = None
+        session.busy = True
+        session.touched = time.monotonic()
+        loop = asyncio.get_running_loop()
+        written = 0
+        try:
+            f = await loop.run_in_executor(None, open, session.temp, "r+b")
+            session.handle = f
+            try:
+                await loop.run_in_executor(None, f.seek, offset)
+                async for chunk in chunks:
+                    if session.generation != generation:
+                        raise RuntimeError("superseded by a newer request")
+                    if offset + written + len(chunk) > session.total:
+                        raise ValueError("Chunk exceeds the declared file size")
+                    await loop.run_in_executor(None, f.write, chunk)
+                    written += len(chunk)
+                    session.touched = time.monotonic()
+                if expected_size is not None and written != expected_size:
+                    raise ValueError(f"Chunk incomplete: received {written} of {expected_size} bytes")
+            except BaseException:
+                if session.generation == generation:
+                    f.truncate(offset)  # Roll back the partial chunk so a retry starts clean.
+                raise
+            finally:
+                f.close()
+                if session.handle is f:
+                    session.handle = None
+            if session.generation != generation:
+                raise RuntimeError("superseded by a newer request")
+            session.received = offset + written
+        except Exception as exc:
+            logger.warning("Upload chunk for %s failed at offset %d: %s", session.destination, offset, exc)
+            return {"received": session.received}, f"Chunk failed: {exc}"
+        finally:
+            if session.generation == generation:
+                session.busy = False
+                if session.aborted:
+                    self._drop_upload_session(session)
+
+        if session.aborted:
+            return None, "Upload session not found (it was cancelled)"
+        if session.received < session.total:
+            return {"upload_id": upload_id, "received": session.received, "total": session.total, "done": False}, None
+
+        # Last chunk: move the finished file into place.
+        self._upload_sessions.pop(upload_id, None)
+        try:
+            await loop.run_in_executor(None, self._atomic_move, session.temp, session.destination)
+        except Exception as exc:
+            self._drop_upload_session(session)
+            return None, f"Upload failed: {exc}"
+        self._uploads.discard(session.destination)
+        logger.info("Uploaded model file %s (%d bytes, chunked)", session.destination, session.received)
+        return {
+            "upload_id": upload_id,
+            "received": session.received,
+            "total": session.total,
+            "done": True,
+            "folder": session.folder,
+            "filename": session.destination.name,
+            "destination": str(session.destination),
+            "size": session.received,
+        }, None
+
+    def abort_upload(self, upload_id: str) -> tuple[bool, str | None]:
+        session = self._upload_sessions.get(upload_id)
+        if not session:
+            return False, "Upload session not found"
+        if session.busy:
+            session.aborted = True  # The in-flight chunk cleans up when it finishes.
+        else:
+            self._drop_upload_session(session)
+        return True, None
 
 
 def create_default_manager() -> DownloadManager:

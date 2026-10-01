@@ -9,7 +9,7 @@ A ComfyUI custom-node extension that lets WebUI users download models directly i
 - Optional custom filename override.
 - Live progress bar with bytes downloaded, total size, speed, and ETA.
 - List of active and completed downloads, with cancel support.
-- **Upload** tab: pick one or more model files from your own computer and stream them into a model folder, with progress, cancel, and an overwrite option. Uploads stream to disk, so they are not limited by ComfyUI's `--max-upload-size`.
+- **Upload** tab: pick one or more model files from your own computer and send them into a model folder, with progress, cancel, and an overwrite option. Files go up in 32 MB chunks that are retried automatically if the connection drops or a proxy times out, so multi-GB uploads survive flaky links and per-request proxy limits. Uploads are not limited by ComfyUI's `--max-upload-size`.
 - **Files** tab: browse each model folder (including subfolders), filter and sort by name, size or date, and delete old models. Delete asks for a second click to confirm. Files that a download or upload is still writing can't be deleted.
 - After an upload or delete, node model dropdowns are refreshed automatically.
 - Routes are registered directly on ComfyUI's own web server, so remote WebUI users can reach them without exposing a separate port.
@@ -92,7 +92,13 @@ These are served from the same host/port as ComfyUI:
 - `DELETE /api/model-downloader/download/{download_id}` — Cancel a download.
 - `GET /api/model-downloader/files?folder=loras` — List files in a model folder (recursive).
 - `DELETE /api/model-downloader/files?folder=loras&path=sdxl/old.safetensors` — Delete a file (`path` is relative to the folder).
-- `POST /api/model-downloader/upload?folder=loras&filename=my.safetensors&overwrite=0` — Upload a file. The request body is the raw file bytes (`Content-Type: application/octet-stream`), for example `curl --data-binary @my.safetensors -H "Content-Type: application/octet-stream" "http://host:8188/api/model-downloader/upload?folder=loras&filename=my.safetensors"`.
+- `POST /api/model-downloader/upload?folder=loras&filename=my.safetensors&overwrite=0` — Upload a file in a single request. The request body is the raw file bytes (`Content-Type: application/octet-stream`), for example `curl --data-binary @my.safetensors -H "Content-Type: application/octet-stream" "http://host:8188/api/model-downloader/upload?folder=loras&filename=my.safetensors"`.
+- Chunked uploads (used by the WebUI):
+  - `POST /api/model-downloader/upload/start` with JSON `{"folder", "filename", "size", "overwrite"}` returns an `upload_id`.
+  - `POST /api/model-downloader/upload/{upload_id}/chunk?offset=N` sends raw bytes starting at `N`. It returns `received`, and `done: true` after the last chunk. A wrong offset returns 409 with the server's `received`, so the client can resume.
+  - `GET /api/model-downloader/upload/{upload_id}` returns how many bytes the server has committed.
+  - `DELETE /api/model-downloader/upload/{upload_id}` cancels the upload and removes the partial file.
+  - Sessions idle for 15 minutes are discarded.
 
 ### Standalone service routes (legacy)
 
@@ -106,6 +112,7 @@ Available when the standalone service is running on its own port:
 - `GET /files`
 - `DELETE /files`
 - `POST /upload`
+- `POST /upload/start`, `GET /upload/{upload_id}`, `POST /upload/{upload_id}/chunk`, `DELETE /upload/{upload_id}`
 
 All endpoints respond with JSON.
 
@@ -119,6 +126,6 @@ After ComfyUI loads the extension, a **Model Downloader** button appears in the 
 - Filenames are sanitized to prevent directory traversal.
 - The file manager can only list and delete files inside `models/<folder>`. Folder names and file paths containing `..`, absolute paths or drive letters are rejected.
 - **Anyone who can reach your ComfyUI can now delete and upload model files.** Only expose ComfyUI to people you trust.
-- If ComfyUI is behind a reverse proxy (nginx, Cloudflare, etc.), large uploads may be rejected by the proxy's own body-size limit (e.g. nginx `client_max_body_size`).
+- If ComfyUI is behind a reverse proxy (nginx, Cloudflare, etc.), the WebUI's 32 MB upload chunks must fit the proxy's per-request body limit (e.g. nginx `client_max_body_size`, which defaults to 1 MB). Single-request `curl` uploads must fit the whole file.
 - The standalone service binds to `127.0.0.1` by default; change `COMFY_MODEL_DL_HOST` only if you understand the network exposure implications.
 - Because the new ComfyUI routes run through ComfyUI's own server, they inherit whatever authentication / exposure ComfyUI already has. Add authentication if your ComfyUI instance is exposed to untrusted users.

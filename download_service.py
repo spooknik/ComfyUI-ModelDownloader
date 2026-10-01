@@ -46,6 +46,10 @@ class DownloadService:
         self._app.router.add_get("/files", self.handle_files)
         self._app.router.add_delete("/files", self.handle_delete_file)
         self._app.router.add_post("/upload", self.handle_upload)
+        self._app.router.add_post("/upload/start", self.handle_upload_start)
+        self._app.router.add_get("/upload/{upload_id}", self.handle_upload_status)
+        self._app.router.add_post("/upload/{upload_id}/chunk", self.handle_upload_chunk)
+        self._app.router.add_delete("/upload/{upload_id}", self.handle_upload_abort)
         self._app.router.add_options("/{tail:.*}", self.handle_options)
 
     async def handle_options(self, request: web.Request) -> web.Response:
@@ -99,8 +103,7 @@ class DownloadService:
         return self._json_response({"status": "cancellation requested"})
 
     async def handle_files(self, request: web.Request) -> web.Response:
-        loop = asyncio.get_running_loop()
-        data, error = await loop.run_in_executor(None, self.manager.list_files, request.query.get("folder", ""))
+        data, error = await self.manager.list_files_async(request.query.get("folder", ""))
         if error:
             return self._json_response({"error": error}, status=error_status(error))
         return self._json_response(data)
@@ -122,6 +125,48 @@ class DownloadService:
         if error:
             return self._json_response({"error": error}, status=error_status(error))
         return self._json_response(data, status=201)
+
+    async def handle_upload_start(self, request: web.Request) -> web.Response:
+        try:
+            payload = await request.json()
+        except json.JSONDecodeError:
+            return self._json_response({"error": "Invalid JSON"}, status=400)
+        data, error = self.manager.start_upload(
+            folder_name=payload.get("folder", ""),
+            filename=payload.get("filename", ""),
+            total=payload.get("size"),
+            overwrite=bool(payload.get("overwrite")),
+        )
+        if error:
+            return self._json_response({"error": error}, status=error_status(error))
+        return self._json_response(data, status=201)
+
+    async def handle_upload_status(self, request: web.Request) -> web.Response:
+        data, error = self.manager.get_upload(request.match_info["upload_id"])
+        if error:
+            return self._json_response({"error": error}, status=error_status(error))
+        return self._json_response(data)
+
+    async def handle_upload_chunk(self, request: web.Request) -> web.Response:
+        try:
+            offset = int(request.query.get("offset", ""))
+        except ValueError:
+            return self._json_response({"error": "Invalid offset"}, status=400)
+        data, error = await self.manager.upload_chunk(
+            upload_id=request.match_info["upload_id"],
+            offset=offset,
+            chunks=request.content.iter_chunked(1 << 20),
+            expected_size=request.content_length,
+        )
+        if error:
+            return self._json_response({"error": error, **(data or {})}, status=error_status(error))
+        return self._json_response(data)
+
+    async def handle_upload_abort(self, request: web.Request) -> web.Response:
+        ok, error = self.manager.abort_upload(request.match_info["upload_id"])
+        if not ok:
+            return self._json_response({"error": error}, status=error_status(error))
+        return self._json_response({"status": "cancelled"})
 
     async def start(self) -> None:
         runner = web.AppRunner(self._app)

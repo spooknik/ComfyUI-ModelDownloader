@@ -1,6 +1,12 @@
 import { app } from "../../scripts/app.js";
 
 const API_PREFIX = "/api/model-downloader";
+// Uploads are sent in chunks so a dropped connection or a proxy timeout/body limit only costs one chunk.
+const UPLOAD_CHUNK_SIZE = 32 * 1024 * 1024;
+// Backoff 1, 2, 4, 8, then 15s: ~2 minutes in total, enough to outlast the server's 60s stalled-chunk takeover.
+const UPLOAD_MAX_RETRIES = 10;
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 function getServiceBaseUrl() {
     // Use the same origin as ComfyUI so remote browser users reach the server.
@@ -431,59 +437,113 @@ class ModelDownloaderPanel {
         if (next) this.startUpload(next);
     }
 
-    startUpload(up) {
-        const params = new URLSearchParams({
-            folder: up.folder,
-            filename: up.filename,
-            overwrite: up.overwrite ? "1" : "0",
-        });
-        const xhr = new XMLHttpRequest();
-        up.xhr = xhr;
+    async startUpload(up) {
         up.status = "running";
         up.startedAt = performance.now();
-
-        const finish = (status, error = null) => {
-            up.status = status;
-            up.error = error;
-            up.xhr = null;
-            up.file = null;
-            this.renderUploads();
-            if (status === "completed") this.onModelFilesChanged(up.folder);
-            this.processUploadQueue();
-        };
-
-        xhr.open("POST", `${getServiceBaseUrl()}/upload?${params}`);
-        xhr.setRequestHeader("Content-Type", "application/octet-stream");
-        xhr.upload.onprogress = (e) => {
-            up.loaded = e.loaded;
-            if (e.lengthComputable) up.total = e.total;
-            this.renderUploads();
-        };
-        xhr.onload = () => {
-            let data = {};
-            try {
-                data = JSON.parse(xhr.responseText);
-            } catch (err) {
-                // Non-JSON error page (e.g. from a reverse proxy).
-            }
-            if (xhr.status >= 200 && xhr.status < 300) {
-                up.loaded = up.total;
-                finish("completed");
-            } else {
-                finish("failed", data.error || `HTTP ${xhr.status}`);
-            }
-        };
-        xhr.onerror = () => finish("failed", "Network error (connection lost, or a proxy rejected the upload size)");
-        xhr.onabort = () => finish("cancelled");
-        xhr.send(up.file);
         this.renderUploads();
+
+        let status = "completed";
+        let error = null;
+        try {
+            const response = await apiFetch("/upload/start", {
+                method: "POST",
+                body: JSON.stringify({ folder: up.folder, filename: up.filename, overwrite: up.overwrite, size: up.total }),
+            });
+            const start = await response.json().catch(() => ({}));
+            if (!response.ok) throw new Error(start.error || `HTTP ${response.status}`);
+            up.uploadId = start.upload_id;
+
+            let offset = 0;
+            let retries = 0;
+            while (true) {
+                if (up.cancelRequested) throw new Error("cancelled");
+                const end = Math.min(offset + UPLOAD_CHUNK_SIZE, up.total);
+                const result = await this.sendChunk(up, offset, up.file.slice(offset, end));
+                if (result.ok) {
+                    offset = result.data.received;
+                    up.loaded = offset;
+                    retries = 0;
+                    up.retryNote = null;
+                    if (result.data.done) break;
+                    continue;
+                }
+                if (up.cancelRequested) throw new Error("cancelled");
+                if (!result.retryable || retries >= UPLOAD_MAX_RETRIES) throw new Error(result.error);
+
+                retries += 1;
+                up.retryNote = `${result.error} — retrying (${retries}/${UPLOAD_MAX_RETRIES})`;
+                this.renderUploads();
+                await sleep(Math.min(1000 * 2 ** (retries - 1), 15000));
+                // Resume from whatever the server actually committed (a lost response may hide a completed chunk).
+                const synced = await this.fetchUploadOffset(up.uploadId);
+                if (synced !== null) offset = synced;
+                up.loaded = offset;
+                up.retryNote = null;
+            }
+        } catch (err) {
+            status = up.cancelRequested ? "cancelled" : "failed";
+            error = up.cancelRequested ? null : err.message;
+            if (up.uploadId) apiFetch(`/upload/${up.uploadId}`, { method: "DELETE" }).catch(() => {});
+        }
+
+        up.status = status;
+        up.error = error;
+        up.retryNote = null;
+        up.xhr = null;
+        up.file = null;
+        this.renderUploads();
+        if (status === "completed") this.onModelFilesChanged(up.folder);
+        this.processUploadQueue();
+    }
+
+    sendChunk(up, offset, blob) {
+        // XHR (not fetch) so we get upload progress events.
+        return new Promise((resolve) => {
+            const xhr = new XMLHttpRequest();
+            up.xhr = xhr;
+            xhr.open("POST", `${getServiceBaseUrl()}/upload/${up.uploadId}/chunk?offset=${offset}`);
+            xhr.setRequestHeader("Content-Type", "application/octet-stream");
+            xhr.upload.onprogress = (e) => {
+                up.loaded = offset + e.loaded;
+                this.renderUploads();
+            };
+            xhr.onload = () => {
+                let data = {};
+                try {
+                    data = JSON.parse(xhr.responseText);
+                } catch (err) {
+                    // Non-JSON error page (e.g. from a reverse proxy).
+                }
+                if (xhr.status >= 200 && xhr.status < 300) {
+                    resolve({ ok: true, data });
+                } else {
+                    // 409 = offset mismatch / chunk still being written; 408/429/5xx = transient proxy or server trouble.
+                    const retryable = [408, 409, 429].includes(xhr.status) || xhr.status >= 500;
+                    resolve({ ok: false, retryable, error: data.error || `HTTP ${xhr.status}` });
+                }
+            };
+            xhr.onerror = () => resolve({ ok: false, retryable: true, error: "Network error" });
+            xhr.onabort = () => resolve({ ok: false, retryable: false, error: "cancelled" });
+            xhr.send(blob);
+        });
+    }
+
+    async fetchUploadOffset(uploadId) {
+        try {
+            const response = await apiFetch(`/upload/${uploadId}`);
+            if (!response.ok) return null;
+            return (await response.json()).received;
+        } catch (err) {
+            return null;
+        }
     }
 
     cancelUpload(id) {
         const up = this.uploads.find((u) => u.id === id);
         if (!up) return;
-        if (up.status === "running" && up.xhr) {
-            up.xhr.abort();
+        if (up.status === "running") {
+            up.cancelRequested = true;
+            up.xhr?.abort();
         } else if (up.status === "queued") {
             up.status = "cancelled";
             up.file = null;
@@ -513,7 +573,12 @@ class ModelDownloaderPanel {
                 const cancelHtml = ["queued", "running"].includes(up.status)
                     ? `<span class="cmd-cancel" data-id="${up.id}">cancel</span>`
                     : "";
-                const speedHtml = up.status === "running" ? `· ${formatBytes(speed)}/s · ETA ${formatDuration(eta)}` : "";
+                const speedHtml =
+                    up.status !== "running"
+                        ? ""
+                        : up.retryNote
+                          ? `· ${this.escapeHtml(up.retryNote)}`
+                          : `· ${formatBytes(speed)}/s · ETA ${formatDuration(eta)}`;
                 return `
                     <div class="cmd-download">
                         <div class="cmd-download-header">
