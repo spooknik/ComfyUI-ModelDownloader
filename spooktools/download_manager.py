@@ -642,16 +642,3 @@ class DownloadManager:
             self._drop_upload_session(session)
         return True, None
 
-
-def create_default_manager() -> DownloadManager:
-    """Create a manager with sane defaults inferred from the environment."""
-    comfy_path: Path | None = None
-    if os.environ.get("COMFYUI_PATH"):
-        comfy_path = Path(os.environ["COMFYUI_PATH"]).resolve()
-    else:
-        candidate = Path(__file__).resolve().parent.parent.parent
-        if (candidate / "main.py").exists() or (candidate / "comfy").exists():
-            comfy_path = candidate
-    if not comfy_path:
-        comfy_path = Path.cwd()
-    return DownloadManager(comfyui_base=comfy_path)

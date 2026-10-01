@@ -1,14 +1,6 @@
 """Small sanity test for URL normalization."""
 
-import sys
-from pathlib import Path
-
-# Allow running from either inside the package or from the repo root.
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-try:
-    from download_manager import DownloadManager
-except ImportError:
-    from .download_manager import DownloadManager
+from spooktools.download_manager import DownloadManager
 
 
 def test_huggingface_blob_to_resolve():
