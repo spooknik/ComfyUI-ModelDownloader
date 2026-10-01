@@ -21,6 +21,14 @@ WEB_DIRECTORY = os.path.join(os.path.dirname(os.path.realpath(__file__)), "js")
 def _infer_comfyui_base() -> Path:
     if os.environ.get("COMFYUI_PATH"):
         return Path(os.environ["COMFYUI_PATH"]).resolve()
+    # Ask ComfyUI itself: base_path honours --base-directory (e.g. Docker images that keep models, input and
+    # output under a separate mount), which the guesses below can't see.
+    try:
+        import folder_paths
+
+        return Path(folder_paths.base_path).resolve()
+    except Exception:
+        pass
     # Typical layout: ComfyUI/custom_nodes/ComfyUI-SpookTools/__init__.py
     candidate = Path(__file__).resolve().parent.parent.parent
     if (candidate / "main.py").exists() or (candidate / "comfy").exists():

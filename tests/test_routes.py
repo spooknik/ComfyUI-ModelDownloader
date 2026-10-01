@@ -245,3 +245,23 @@ def test_loader_registers_routes_on_promptserver(comfy: Path, monkeypatch, load_
 
     asyncio.run(scenario())
     assert (comfy / "models" / "loras" / "via_loader.bin").stat().st_size == 5000
+
+
+def test_loader_uses_comfyui_base_directory(comfy: Path, monkeypatch, load_plugin):
+    """ComfyUI started with --base-directory (e.g. mmartial/ComfyUI-Nvidia-Docker's /basedir): models must go there,
+    not into the ComfyUI source checkout the process happens to run from."""
+    app = web.Application()
+    fake_server = types.ModuleType("server")
+    fake_server.PromptServer = types.SimpleNamespace(instance=types.SimpleNamespace(app=app))
+    monkeypatch.setitem(sys.modules, "server", fake_server)
+    monkeypatch.setitem(sys.modules, "folder_paths", types.SimpleNamespace(base_path=str(comfy)))
+    monkeypatch.delenv("COMFYUI_PATH", raising=False)
+    monkeypatch.chdir(comfy.parent)  # The cwd fallback would point somewhere else entirely.
+    load_plugin("ComfyUI-SpookTools")
+
+    async def scenario():
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.get(f"{API_PREFIX}/folders")
+            assert Path((await resp.json())["base"]) == comfy.resolve()
+
+    asyncio.run(scenario())
