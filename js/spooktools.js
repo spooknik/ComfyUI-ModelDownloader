@@ -7,6 +7,7 @@
 
 import { app } from "../../scripts/app.js";
 import { registerModelTabs } from "./features/models/index.js";
+import { registerSystemTab } from "./features/system/index.js";
 import { FloatingButton } from "./lib/button.js";
 import { SpookPanel } from "./lib/panel.js";
 import { injectStyles } from "./lib/styles.js";
@@ -29,6 +30,7 @@ app.registerExtension({
 
         // Features add their tabs here: one line per feature.
         registerModelTabs(panel, app);
+        registerSystemTab(panel, app);
 
         panel.addFooterAction("Reset button position", () => button.resetPosition());
         document.body.appendChild(panel.element);

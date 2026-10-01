@@ -35,7 +35,8 @@ export class SpookPanel {
 
     /**
      * Add a tab. `tab` provides `id`, `label` and `element` (its content), and optionally `onShow()`, called
-     * whenever the tab becomes visible (switched to, or the panel opened while it is the active tab).
+     * whenever the tab becomes visible (switched to, or the panel opened while it is the active tab), and
+     * `onHide()`, called when it stops being visible (another tab chosen, or the panel closed).
      * The first tab added is the initially active one.
      */
     addTab(tab) {
@@ -69,8 +70,10 @@ export class SpookPanel {
 
     switchTab(id) {
         if (!this.tabs.has(id)) return;
+        const previous = this.activeTab;
         this.activeTab = id;
         this.updateTabVisibility();
+        if (previous !== id && this.isOpen()) this.tabs.get(previous)?.tab.onHide?.();
         this.tabs.get(id).tab.onShow?.();
     }
 
@@ -93,7 +96,9 @@ export class SpookPanel {
     }
 
     close() {
+        if (!this.isOpen()) return;
         this.element.hidden = true;
+        this.tabs.get(this.activeTab)?.tab.onHide?.();
     }
 
     toggle() {
