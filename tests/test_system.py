@@ -458,3 +458,30 @@ def test_failed_restart_can_be_retried(make_client, monkeypatch):
 
     asyncio.run(scenario())
     assert len(attempts) == 2
+
+
+def test_restart_refuses_cross_site_requests(make_client, monkeypatch, restarts):
+    """What a hostile page can send from a visitor's browser without a CORS preflight must never restart ComfyUI."""
+    fake_queue(monkeypatch, VolatileQueue(0, 0))
+
+    async def scenario():
+        async with make_client() as client:
+            # fetch(url, {method: "POST", mode: "no-cors"}): no body, so no Content-Type at all.
+            resp = await client.post(f"{API_PREFIX}/system/restart", skip_auto_headers=["Content-Type"])
+            assert resp.status == 415
+            # Modern browsers label it; refused even with an otherwise acceptable content type.
+            resp = await client.post(
+                f"{API_PREFIX}/system/restart", json={"force": True}, headers={"Sec-Fetch-Site": "cross-site"}
+            )
+            assert resp.status == 403
+            await asyncio.sleep(0.4)
+            assert restarts == []
+            # Same-origin requests from our own frontend still work.
+            resp = await client.post(
+                f"{API_PREFIX}/system/restart", json={"force": True}, headers={"Sec-Fetch-Site": "same-origin"}
+            )
+            assert resp.status == 202
+            await asyncio.sleep(0.4)
+            assert len(restarts) == 1
+
+    asyncio.run(scenario())

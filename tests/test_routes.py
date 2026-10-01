@@ -265,3 +265,49 @@ def test_loader_uses_comfyui_base_directory(comfy: Path, monkeypatch, load_plugi
             assert Path((await resp.json())["base"]) == comfy.resolve()
 
     asyncio.run(scenario())
+
+
+def test_cross_site_writes_refused(comfy: Path, make_client):
+    """CSRF guard on every feature's write routes: form-style bodies and browser-labelled cross-site requests."""
+    target = comfy / "models" / "loras" / "a.safetensors"
+
+    async def scenario():
+        async with make_client() as client:
+            # An HTML form / no-cors fetch can send JSON text as text/plain; aiohttp's request.json() would parse it.
+            body = b'{"url": "https://example.com/evil.ckpt", "folder": "checkpoints"}'
+            for ctype in ("text/plain", "application/x-www-form-urlencoded", "multipart/form-data; boundary=x"):
+                resp = await client.post(f"{API}/download", data=body, headers={"Content-Type": ctype})
+                assert resp.status == 415, ctype
+            resp = await client.post(
+                f"{API}/upload",
+                params={"folder": "checkpoints", "filename": "evil.ckpt"},
+                data=b"x",
+                headers={"Content-Type": "text/plain"},
+            )
+            assert resp.status == 415
+            resp = await client.post(
+                f"{LEGACY_API_PREFIX}/upload",
+                params={"folder": "checkpoints", "filename": "evil.ckpt"},
+                data=b"x",
+                skip_auto_headers=["Content-Type"],
+            )
+            assert resp.status == 415
+            resp = await client.delete(
+                f"{API}/files",
+                params={"folder": "loras", "path": "a.safetensors"},
+                headers={"Sec-Fetch-Site": "cross-site"},
+            )
+            assert resp.status == 403 and target.exists()
+            # GETs are untouched (a cross-site page can't read the responses anyway).
+            resp = await client.get(f"{API}/folders", headers={"Sec-Fetch-Site": "cross-site"})
+            assert resp.status == 200
+            # Our own frontend's requests still go through.
+            resp = await client.delete(
+                f"{API}/files",
+                params={"folder": "loras", "path": "a.safetensors"},
+                headers={"Sec-Fetch-Site": "same-origin"},
+            )
+            assert resp.status == 200 and not target.exists()
+
+    asyncio.run(scenario())
+    assert not (comfy / "models" / "checkpoints" / "evil.ckpt").exists()

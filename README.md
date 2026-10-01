@@ -138,5 +138,6 @@ The server code is in the `spooktools/` package. `spooktools/routes.py` register
 - Filenames are sanitized to prevent directory traversal.
 - The file manager can only list and delete files inside `models/<folder>`. Folder names and file paths that contain `..`, absolute paths or drive letters are rejected.
 - **Anyone who can reach your ComfyUI can delete and upload model files.** Only expose ComfyUI to people you trust.
+- Other websites you visit can't use your browser to call these endpoints (CSRF). State-changing requests marked `Sec-Fetch-Site: cross-site` are refused, and POSTs must send `Content-Type: application/json` (or `application/octet-stream` for uploads), which a page on another site can't send without a CORS preflight. Scripts and `curl` must set the Content-Type header.
 - If ComfyUI is behind a reverse proxy (nginx, Cloudflare, etc.), each 32 MB upload chunk from the browser panel must fit within the proxy's per-request body limit. For nginx this is `client_max_body_size`, which defaults to 1 MB. A single-request `curl` upload must fit the whole file.
 - The routes run on ComfyUI's own server, so they have the same authentication and network exposure as ComfyUI itself. If your instance is reachable by untrusted users, put authentication in front of it.
