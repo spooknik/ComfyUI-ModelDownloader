@@ -6,6 +6,7 @@
 // lib/ and features/ only exports, and receives `app` as an argument where needed.
 
 import { app } from "../../scripts/app.js";
+import { registerGalleryTab } from "./features/gallery/index.js";
 import { registerModelTabs } from "./features/models/index.js";
 import { registerSystemTab } from "./features/system/index.js";
 import { FloatingButton } from "./lib/button.js";
@@ -30,6 +31,7 @@ app.registerExtension({
 
         // Features add their tabs here: one line per feature.
         registerModelTabs(panel, app);
+        registerGalleryTab(panel, app);
         registerSystemTab(panel, app);
 
         panel.addFooterAction("Reset button position", () => button.resetPosition());

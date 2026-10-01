@@ -8,7 +8,7 @@ from collections.abc import Awaitable, Callable, Iterable
 
 from aiohttp import web
 
-from . import routes_models, routes_system
+from . import routes_gallery, routes_models, routes_system
 from .download_manager import DownloadManager
 from .http_helpers import json_response
 
@@ -27,6 +27,7 @@ RouteFactory = Callable[[DownloadManager], Iterable[web.RouteDef]]
 FEATURES: tuple[RouteFactory, ...] = (
     routes_models.routes,
     routes_system.routes,
+    routes_gallery.routes,
 )
 
 

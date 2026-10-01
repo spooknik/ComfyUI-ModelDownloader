@@ -10,6 +10,7 @@ Formerly **ComfyUI-ModelDownloader**. See [Upgrading from ComfyUI-ModelDownloade
 - **Download** tab: paste any direct `http`/`https` model URL, pick a destination folder from the ComfyUI model directories (`checkpoints`, `loras`, `vae`, `controlnet`, etc.), and optionally override the filename. A live progress bar shows bytes downloaded, total size, speed and ETA. Active and finished downloads are listed, and active ones can be cancelled.
 - **Upload** tab: pick one or more model files from your own computer and send them into a model folder, with progress, cancel and an overwrite option. Files go up in 32 MB chunks. If the connection drops or a proxy times out, the chunk is retried automatically, so multi-GB uploads survive flaky links and per-request proxy limits. Uploads are not limited by ComfyUI's `--max-upload-size`.
 - **Files** tab: browse each model folder (including subfolders), filter and sort by name, size or date, and delete old models. Delete needs a second click to confirm. You can't delete a file while a download or upload is still writing it.
+- **Gallery** tab: a bulk image manager for ComfyUI's `output` (generated) and `input` (imported) folders. Browse thumbnails, select many files at once, download them as one zip or delete them. See [Gallery](#gallery).
 - After an upload or delete, node model dropdowns refresh automatically.
 - All routes run on ComfyUI's own web server, so remote users can reach them without you exposing another port.
 
@@ -99,6 +100,23 @@ How the restart works:
 
 **Anyone who can reach your ComfyUI can restart it**, just as they can queue jobs or delete models. See [Security notes](#security-notes).
 
+## Gallery
+
+ComfyUI's own interface handles outputs one file at a time. The **Gallery** tab shows how many files `output` and `input` hold and how much space they use. **Open gallery** opens a full-screen manager:
+
+- Switch between **Output** and **Input**, move through subfolders with the breadcrumb and the subfolder menu, and choose whether files in subfolders are included.
+- Search by file name, sort by newest, oldest, name or size, and filter by images, videos or other files (`.json`, `.latent`, `.txt` and so on, so you can clean those up too). A slider sets the thumbnail size.
+- Files are shown 200 per page, so folders with tens of thousands of files stay fast. Thumbnails load as they scroll into view.
+- Click a file to select it, Shift-click to select a range (this also works across pages), and Ctrl-click or Cmd-click to toggle one file. **Select page** selects the whole page (or press Ctrl+A), and **Select all N matching** selects every file that matches the current folder, search and filter. The number of selected files and their total size are always shown.
+- **Download zip** downloads the selection as one archive with its subfolders preserved. **Delete** asks for confirmation with a second click ("Delete 37 files?") and then reports any file it could not delete. Deleting from `input` refreshes the image lists of nodes such as Load Image.
+- Double-click a file (or use its ⤢ button) to open a large preview. Use ← and → or the arrow buttons to step through the files, and videos play in the preview. Each press of Esc does one step: it closes the preview if one is open, otherwise clears the selection, otherwise closes the gallery. While the gallery is open, key presses do not reach ComfyUI's shortcuts.
+
+The folders are the ones ComfyUI itself uses (`folder_paths.get_output_directory()` and `get_input_directory()`), so `--base-directory`, `--output-directory` and `--input-directory` are respected. In Docker images such as [mmartial/ComfyUI-Nvidia-Docker](https://github.com/mmartial/ComfyUI-Nvidia-Docker), that is typically `/basedir/output` and `/basedir/input`. The gallery cannot reach any other folder, and hidden files and folders (names starting with `.`) are not shown.
+
+Thumbnails are made with Pillow, which ships with ComfyUI. They are cached in ComfyUI's temp folder under `spooktools-thumbs`, which ComfyUI empties when it starts. At most four thumbnails are rendered at a time, so opening a large folder does not use every CPU core. Animated images show their first frame, and EXIF rotation is applied. Files Pillow cannot read show "No preview". Videos show an icon (there is no ffmpeg dependency) and play in the preview.
+
+Zip downloads are streamed. The archive is written while it downloads, so it is never built in memory or on disk, and multi-GB selections work. Files are stored without recompression (images and videos are already compressed) and zip64 is used when the archive needs it. The browser's own download manager shows the progress. If a file is deleted while its archive is downloading, that file is left out. If you cancel the download, the server stops writing the archive.
+
 ## API endpoints
 
 These are served from the same host and port as ComfyUI. Every route is also available under the legacy prefix `/api/model-downloader`.
@@ -122,6 +140,14 @@ These are served from the same host and port as ComfyUI. Every route is also ava
 
 All endpoints respond with JSON.
 
+Gallery endpoints. `root` is `output` or `input`, and every path is relative to that folder:
+
+- `GET /api/spooktools/gallery/list?root=output&subfolder=&recursive=1&q=&sort=newest&kind=all&offset=0&limit=200`: one page of files plus totals. The response is `{root, subfolder, directory, subfolders, total, total_size, offset, items: [{path, name, size, modified, kind}]}`, where `subfolders` lists the immediate child folders. `sort` is `newest`, `oldest`, `name` or `size`. `kind` is `all`, `image`, `video` or `other`. `limit` is at most 1000. With `paths_only=1`, the response has `paths` and `sizes` arrays for every matching file instead of `items`.
+- `GET /api/spooktools/gallery/thumb?root=output&path=a.png&size=256`: a WebP thumbnail (JPEG if Pillow has no WebP support). It returns 415 if the file can't be turned into a thumbnail.
+- `GET /api/spooktools/gallery/file?root=output&path=a.png`: the original file, served inline for images, videos and text, and as a download for anything else.
+- `POST /api/spooktools/gallery/delete` with JSON `{"root", "paths": [...]}`: deletes files, never folders, with up to 10,000 paths per request. It returns `{deleted: [...], failed: [{path, error}]}`.
+- `POST /api/spooktools/gallery/zip` with JSON `{"root", "paths": [...]}`: checks the selection and returns `{token, count, total_size, filename, missing}`. Then `GET /api/spooktools/gallery/zip/{token}` streams the archive. A token expires after 10 minutes and can be used up to three times.
+
 ## Development
 
 Run the tests from the repository root:
@@ -139,5 +165,6 @@ The server code is in the `spooktools/` package. `spooktools/routes.py` register
 - The file manager can only list and delete files inside `models/<folder>`. Folder names and file paths that contain `..`, absolute paths or drive letters are rejected.
 - **Anyone who can reach your ComfyUI can delete and upload model files.** Only expose ComfyUI to people you trust.
 - Other websites you visit can't use your browser to call these endpoints (CSRF). State-changing requests marked `Sec-Fetch-Site: cross-site` are refused, and POSTs must send `Content-Type: application/json` (or `application/octet-stream` for uploads), which a page on another site can't send without a CORS preflight. Scripts and `curl` must set the Content-Type header.
+- **Anyone who can reach your ComfyUI can also view, download and delete everything in `output` and `input` through the gallery.** It can't reach files outside those two folders. Paths with `..`, absolute paths, drive letters and hidden names are rejected. Files are served with `X-Content-Type-Options: nosniff` and a sandboxing Content-Security-Policy, and only image, video and plain-text files are shown in the browser, so an uploaded HTML or SVG file can't run script on ComfyUI's origin.
 - If ComfyUI is behind a reverse proxy (nginx, Cloudflare, etc.), each 32 MB upload chunk from the browser panel must fit within the proxy's per-request body limit. For nginx this is `client_max_body_size`, which defaults to 1 MB. A single-request `curl` upload must fit the whole file.
 - The routes run on ComfyUI's own server, so they have the same authentication and network exposure as ComfyUI itself. If your instance is reachable by untrusted users, put authentication in front of it.
