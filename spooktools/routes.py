@@ -7,7 +7,7 @@ from collections.abc import Callable, Iterable
 
 from aiohttp import web
 
-from . import routes_models
+from . import routes_gallery, routes_models
 from .download_manager import DownloadManager
 
 logger = logging.getLogger(__name__)
@@ -20,7 +20,7 @@ RouteFactory = Callable[[DownloadManager], Iterable[web.RouteDef]]
 
 # Each feature module exposes `routes(manager)` returning route definitions with paths relative to the prefix.
 # Adding a feature = one new module + one entry here.
-FEATURES: tuple[RouteFactory, ...] = (routes_models.routes,)
+FEATURES: tuple[RouteFactory, ...] = (routes_models.routes, routes_gallery.routes)
 
 
 def register_routes(
