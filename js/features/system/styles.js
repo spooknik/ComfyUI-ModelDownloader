@@ -18,8 +18,10 @@ const CSS = `
     .spk-meter-head { display: flex; justify-content: space-between; gap: 8px; font-size: 11px; color: #aaa; margin-bottom: 3px; }
     .spk-meter-label { min-width: 0; overflow-wrap: anywhere; }
     .spk-meter-value { flex: none; color: #ddd; font-variant-numeric: tabular-nums; white-space: nowrap; }
-    .spk-bar { height: 6px; background: #2c2c2c; border-radius: 3px; overflow: hidden; }
-    .spk-bar-fill { height: 100%; background: #2d7bf6; }
+    .spk-bar { display: flex; height: 6px; background: #2c2c2c; border-radius: 3px; overflow: hidden; }
+    .spk-bar-fill { flex: none; height: 100%; background: #2d7bf6; }
+    .spk-bar-fill.cache, .spk-swatch.cache { background: #7950f2; opacity: 0.55; }
+    .spk-swatch { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 5px; vertical-align: -1px; }
     .spk-bar-fill.warn, .spk-cores > span.warn { background: #f59f00; }
     .spk-bar-fill.crit, .spk-cores > span.crit { background: #e03131; }
     .spk-meter-sub { font-size: 11px; color: #888; margin-top: 3px; white-space: pre-line; }

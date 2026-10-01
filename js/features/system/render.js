@@ -44,18 +44,31 @@ const percentOf = (used, total) => (isNum(used) && isNum(total) && total > 0 ? (
 const level = (percent) => (percent > 90 ? "crit" : percent > 75 ? "warn" : "");
 const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
 
-/** One labelled bar. `percent` null draws an empty bar (unknown). */
-export function meter({ label, value, percent, sub, title }) {
+/**
+ * One labelled bar. `percent` null draws an empty bar (unknown). Optional `extra` ({percent, className}) is a
+ * second segment stacked after the main one (e.g. reclaimable cache), and `legend` ([{className, text}]) adds
+ * colour-keyed lines under `sub`.
+ */
+export function meter({ label, value, percent, sub, title, extra, legend }) {
     const known = isNum(percent);
     const p = known ? Math.min(Math.max(percent, 0), 100) : 0;
+    const e = known && extra && isNum(extra.percent) ? Math.min(Math.max(extra.percent, 0), 100 - p) : 0;
     const aria = known ? ` aria-valuenow="${Math.round(p)}"` : "";
+    const legendHtml = (legend || [])
+        .map(
+            (item) =>
+                `<div class="spk-meter-sub"><span class="spk-swatch ${esc(item.className)}"></span>${esc(item.text)}</div>`,
+        )
+        .join("");
     return `
         <div class="spk-meter"${title ? ` title="${esc(title)}"` : ""}>
             <div class="spk-meter-head"><span class="spk-meter-label">${esc(label)}</span><span class="spk-meter-value">${esc(value)}</span></div>
             <div class="spk-bar" role="progressbar" aria-label="${esc(label)}" aria-valuemin="0" aria-valuemax="100"${aria}>
                 <div class="spk-bar-fill ${level(p)}" style="width: ${p.toFixed(1)}%"></div>
+                ${e > 0 ? `<div class="spk-bar-fill ${esc(extra.className)}" style="width: ${e.toFixed(1)}%"></div>` : ""}
             </div>
             ${sub ? `<div class="spk-meter-sub">${esc(sub)}</div>` : ""}
+            ${legendHtml}
         </div>`;
 }
 
@@ -131,16 +144,23 @@ function ramCard(ram) {
         `${formatSize(ram.available)} available`,
         isNum(ram.swap_total) && ram.swap_total > 0 ? `swap ${formatUsedOfTotal(ram.swap_used, ram.swap_total)}` : null,
     ].filter(Boolean);
-    // Used/available already treat the reclaimable ARC as free; say so, since `free`/`htop` count it as used.
-    const arcLine =
-        arc && isNum(arc.size)
-            ? `ZFS cache ${formatSize(arc.size)} (${formatSize(arc.reclaimable)} reclaimable, counted as available)`
-            : null;
+    // Used/available already treat the reclaimable ARC as free (`free`/`htop` count it as used), so it is drawn as
+    // its own segment after real usage, in the cache colour, with a legend line saying what it is.
+    const reclaimable = arc && isNum(arc.size) && arc.reclaimable > 0 ? arc.reclaimable : 0;
     let body = meter({
         label: ram.cgroup ? "Host" : "Used",
         value: `${formatUsedOfTotal(ram.used, ram.total)} · ${pct(ram.percent)}`,
         percent: ram.percent,
-        sub: [extras.join(" · "), arcLine].filter(Boolean).join("\n"),
+        sub: extras.join(" · "),
+        extra: reclaimable ? { percent: percentOf(reclaimable, ram.total), className: "cache" } : null,
+        legend: reclaimable
+            ? [
+                  {
+                      className: "cache",
+                      text: `ZFS cache ${formatSize(arc.size)}: ${formatSize(reclaimable)} reclaimable, counted as available`,
+                  },
+              ]
+            : null,
     });
     if (ram.cgroup) {
         const c = ram.cgroup;
