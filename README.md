@@ -79,7 +79,7 @@ If a URL returns an HTML page instead of a binary file, the download fails with 
 
 The **System** tab is a live resource monitor for the machine ComfyUI runs on. It refreshes every 2 seconds, but only while the tab is visible and the panel is open.
 
-- **GPU**: for each GPU, the load, VRAM used out of total, temperature, power draw and limit, and fan speed. Under the VRAM bar, it shows how much of that PyTorch, and so ComfyUI, holds (reserved and allocated). These figures need the optional `nvidia-ml-py` package (`pip install nvidia-ml-py`). Without it, only PyTorch's VRAM figures are shown.
+- **GPU**: for each GPU, the load, VRAM used out of total, temperature, power draw and limit, and fan speed. Under the VRAM bar, it shows how much of that PyTorch, and so ComfyUI, holds (reserved and allocated). These figures come from the `nvidia-ml-py` package, which is listed in `requirements.txt` (`pip install -r requirements.txt`). Without it, only PyTorch's VRAM figures are shown.
 - **CPU**: the model, core and thread counts, total load with a small per-core strip, and the load average on Linux and macOS.
 - **RAM**: used out of total, swap, and ComfyUI's own memory use.
 - **Disks**: free space for the models, output, input and temp directories. Directories on the same filesystem share one bar, labelled with all of them. `--base-directory`, `--output-directory` and similar options are respected.

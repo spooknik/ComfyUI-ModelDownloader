@@ -33,8 +33,10 @@ const CSS = `
     .spk-cancel, .spk-link { font-size: 11px; color: #ff6b6b; cursor: pointer; margin-left: 8px; }
     .spk-link { color: #888; font-weight: normal; }
     .spk-empty { color: #888; font-size: 12px; font-style: italic; }
-    .spk-tabs { display: flex; gap: 4px; margin-bottom: 12px; border-bottom: 1px solid #333; }
-    .spk-tab { flex: 1; padding: 8px; background: none; color: #aaa; border: none; border-bottom: 2px solid transparent; cursor: pointer; font-size: 13px; }
+    .spk-tabs { display: flex; gap: 2px; margin-bottom: 12px; border-bottom: 1px solid #333; overflow-x: auto; scrollbar-width: none; }
+    .spk-tabs::-webkit-scrollbar { display: none; }
+    .spk-tab { flex: 1 0 auto; padding: 8px 6px; background: none; color: #aaa; border: none; border-bottom: 2px solid transparent; cursor: pointer; font-size: 13px; white-space: nowrap; }
+    @media (max-width: 400px) { .spk-tab { padding: 8px 3px; font-size: 12px; } }
     .spk-tab:hover { color: #eee; }
     .spk-tab.active { color: #fff; border-bottom-color: #2d7bf6; }
     .spk-file { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-bottom: 1px solid #2a2a2a; }
