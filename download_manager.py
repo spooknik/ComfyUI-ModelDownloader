@@ -13,7 +13,8 @@ import shutil
 import threading
 import time
 import uuid
-from pathlib import Path
+from collections.abc import AsyncIterable
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 import aiohttp
@@ -35,6 +36,20 @@ DEFAULT_COMMON_FOLDERS = [
     "ipadapter",
     "instantid",
 ]
+
+TEMP_SUFFIX = ".tmp"
+
+
+def error_status(error: str | None) -> int:
+    """Map a manager error message to an HTTP status code."""
+    msg = (error or "").lower()
+    if "not found" in msg:
+        return 404
+    if "already exists" in msg or "in progress" in msg or "cannot cancel" in msg:
+        return 409
+    if "disk space" in msg:
+        return 507
+    return 400
 
 
 @dataclasses.dataclass(slots=True)
@@ -88,13 +103,27 @@ class DownloadManager:
         self.chunk_size = chunk_size
         self.common_folders: list[str] = list(extra_folders or []) + list(DEFAULT_COMMON_FOLDERS)
         self._downloads: dict[str, DownloadEntry] = {}
+        self._uploads: set[Path] = set()
         self._lock = asyncio.Lock()
 
     def _resolve_folder(self, folder_name: str) -> Path:
-        candidate = (self.comfyui_base / "models" / folder_name).resolve()
-        if not str(candidate).startswith(str(self.comfyui_base)):
+        # Folder names are a single path component directly under models/. Checked lexically (not via
+        # resolve()) so symlinked model folders keep working while ".." and separators are rejected.
+        if not folder_name or folder_name in (".", "..") or re.search(r'[\\/:*?"<>|]', folder_name):
             raise ValueError("Invalid folder path")
-        return candidate
+        return self.comfyui_base / "models" / folder_name
+
+    def _resolve_file(self, folder_name: str, relative_path: str) -> Path:
+        rel = PurePosixPath(relative_path.replace("\\", "/"))
+        if not rel.parts or rel.is_absolute() or ".." in rel.parts or ":" in relative_path:
+            raise ValueError("Invalid file path")
+        return self._resolve_folder(folder_name).joinpath(*rel.parts)
+
+    def _active_paths(self) -> set[Path]:
+        """Destinations (and their temp files) of in-flight downloads and uploads."""
+        paths = set(self._uploads)
+        paths.update(d.destination for d in self._downloads.values() if d.status in ("pending", "running"))
+        return paths | {p.with_name(p.name + TEMP_SUFFIX) for p in paths}
 
     def list_folders(self) -> dict[str, Any]:
         models_root = self.comfyui_base / "models"
@@ -185,6 +214,8 @@ class DownloadManager:
         filename = self._sanitize_filename(custom_filename) if custom_filename else self._infer_filename_from_url(url)
         destination = folder_path / filename
 
+        if destination in self._active_paths():
+            return None, False, "A transfer to this file is already in progress"  # type: ignore[return-value]
         if destination.exists() and not overwrite:
             return None, False, "File already exists. Set overwrite=true to replace."  # type: ignore[return-value]
 
@@ -295,6 +326,129 @@ class DownloadManager:
         if entry.task:
             entry.task.cancel()
         return True, None
+
+    def list_files(self, folder_name: str) -> tuple[dict[str, Any] | None, str | None]:
+        """List files (recursively) inside a model folder. Blocking; run in an executor."""
+        try:
+            folder = self._resolve_folder(folder_name)
+        except ValueError as exc:
+            return None, f"Invalid folder: {exc}"
+
+        active = self._active_paths()
+        files: list[dict[str, Any]] = []
+        seen_dirs: set[str] = set()
+        for root, dirs, names in os.walk(folder, followlinks=True):
+            real = os.path.realpath(root)
+            if real in seen_dirs:  # Symlink cycle.
+                dirs[:] = []
+                continue
+            seen_dirs.add(real)
+            dirs[:] = [d for d in dirs if not d.startswith(".")]
+            for name in names:
+                if name.startswith("."):
+                    continue
+                path = Path(root) / name
+                try:
+                    stat = path.stat()
+                except OSError:
+                    continue
+                files.append(
+                    {
+                        "path": path.relative_to(folder).as_posix(),
+                        "name": name,
+                        "size": stat.st_size,
+                        "modified": stat.st_mtime,
+                        "active": path in active,
+                    }
+                )
+        files.sort(key=lambda f: f["path"].lower())
+        return {
+            "folder": folder_name,
+            "path": str(folder),
+            "files": files,
+            "total_size": sum(f["size"] for f in files),
+        }, None
+
+    def delete_file(self, folder_name: str, relative_path: str) -> tuple[bool, str | None]:
+        try:
+            path = self._resolve_file(folder_name, relative_path)
+        except ValueError as exc:
+            return False, str(exc)
+        if path in self._active_paths():
+            return False, "Cannot delete a file while a transfer is in progress"
+        if not path.is_file() and not path.is_symlink():
+            return False, "File not found"
+        try:
+            path.unlink()
+        except OSError as exc:
+            return False, f"Delete failed: {exc}"
+        logger.info("Deleted model file %s", path)
+        return True, None
+
+    async def save_upload(
+        self,
+        folder_name: str,
+        filename: str,
+        chunks: AsyncIterable[bytes],
+        expected_size: int | None = None,
+        overwrite: bool = False,
+    ) -> tuple[dict[str, Any] | None, str | None]:
+        """Stream an uploaded file into a model folder via a temp file, then move it into place."""
+        folder_name = (folder_name or "").strip()
+        filename = (filename or "").strip()
+        if not folder_name:
+            return None, "Missing folder"
+        if not filename:
+            return None, "Missing filename"
+        try:
+            folder_path = self._resolve_folder(folder_name)
+        except ValueError as exc:
+            return None, f"Invalid folder: {exc}"
+
+        destination = folder_path / self._sanitize_filename(filename)
+        if destination in self._active_paths():
+            return None, "A transfer to this file is already in progress"
+        if destination.exists() and not overwrite:
+            return None, "File already exists. Set overwrite=true to replace."
+
+        folder_path.mkdir(parents=True, exist_ok=True)
+        if expected_size:
+            free = shutil.disk_usage(folder_path).free
+            if expected_size > free:
+                return None, f"Not enough disk space ({expected_size} bytes needed, {free} free)"
+
+        temp_destination = destination.with_name(destination.name + TEMP_SUFFIX)
+        loop = asyncio.get_running_loop()
+        self._uploads.add(destination)
+        received = 0
+        ok = False
+        try:
+            f = await loop.run_in_executor(None, open, temp_destination, "wb")
+            try:
+                async for chunk in chunks:
+                    await loop.run_in_executor(None, f.write, chunk)
+                    received += len(chunk)
+            finally:
+                await loop.run_in_executor(None, f.close)
+            if expected_size is not None and received != expected_size:
+                return None, f"Upload incomplete: received {received} of {expected_size} bytes"
+            await loop.run_in_executor(None, self._atomic_move, temp_destination, destination)
+            ok = True
+        except Exception as exc:
+            logger.warning("Upload of %s failed: %s", destination, exc)
+            return None, f"Upload failed: {exc}"
+        finally:
+            self._uploads.discard(destination)
+            if not ok:
+                temp_destination.unlink(missing_ok=True)
+
+        logger.info("Uploaded model file %s (%d bytes)", destination, received)
+        return {
+            "folder": folder_name,
+            "filename": destination.name,
+            "destination": str(destination),
+            "size": received,
+        }, None
 
 
 def create_default_manager() -> DownloadManager:

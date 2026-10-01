@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from pathlib import Path
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -46,9 +48,9 @@ def _register_routes() -> None:
 
     base = _infer_comfyui_base()
     try:
-        from .download_manager import DownloadManager
+        from .download_manager import DownloadManager, error_status
     except ImportError:
-        from download_manager import DownloadManager
+        from download_manager import DownloadManager, error_status
 
     _DOWNLOAD_MANAGER = DownloadManager(comfyui_base=base)
     app: web.Application = server.app
@@ -85,18 +87,42 @@ def _register_routes() -> None:
             overwrite=bool(payload.get("overwrite")),
         )
         if not ok:
-            # Use 409 when the file already exists.
-            status = 409 if error and "already exists" in error else 400
-            return json_response({"error": error}, status=status)
+            return json_response({"error": error}, status=error_status(error))
         return json_response(entry.to_dict(), status=202)
 
     async def api_cancel(request: web.Request) -> web.Response:
         download_id = request.match_info["download_id"]
         ok, error = _DOWNLOAD_MANAGER.cancel_download(download_id)
         if not ok:
-            status = 404 if error and "not found" in error else 409
-            return json_response({"error": error}, status=status)
+            return json_response({"error": error}, status=error_status(error))
         return json_response({"status": "cancellation requested"})
+
+    async def api_files(request: web.Request) -> web.Response:
+        loop = asyncio.get_running_loop()
+        data, error = await loop.run_in_executor(None, _DOWNLOAD_MANAGER.list_files, request.query.get("folder", ""))
+        if error:
+            return json_response({"error": error}, status=error_status(error))
+        return json_response(data)
+
+    async def api_delete_file(request: web.Request) -> web.Response:
+        ok, error = _DOWNLOAD_MANAGER.delete_file(request.query.get("folder", ""), request.query.get("path", ""))
+        if not ok:
+            return json_response({"error": error}, status=error_status(error))
+        return json_response({"status": "deleted"})
+
+    async def api_upload(request: web.Request) -> web.Response:
+        # Raw request body, streamed: request.content bypasses ComfyUI's --max-upload-size (client_max_size),
+        # which only applies to fully-buffered reads.
+        data, error = await _DOWNLOAD_MANAGER.save_upload(
+            folder_name=request.query.get("folder", ""),
+            filename=request.query.get("filename", ""),
+            chunks=request.content.iter_chunked(1 << 20),
+            expected_size=request.content_length,
+            overwrite=request.query.get("overwrite") in ("1", "true"),
+        )
+        if error:
+            return json_response({"error": error}, status=error_status(error))
+        return json_response(data, status=201)
 
     prefix = "/api/model-downloader"
     app.router.add_get(f"{prefix}/folders", api_folders)
@@ -104,6 +130,9 @@ def _register_routes() -> None:
     app.router.add_get(f"{prefix}/progress/{{download_id}}", api_progress)
     app.router.add_post(f"{prefix}/download", api_download)
     app.router.add_delete(f"{prefix}/download/{{download_id}}", api_cancel)
+    app.router.add_get(f"{prefix}/files", api_files)
+    app.router.add_delete(f"{prefix}/files", api_delete_file)
+    app.router.add_post(f"{prefix}/upload", api_upload)
     logger.info("ComfyUI-ModelDownloader routes registered at %s", prefix)
 
 

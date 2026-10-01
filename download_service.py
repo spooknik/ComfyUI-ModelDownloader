@@ -13,9 +13,9 @@ from typing import Any
 from aiohttp import web
 
 try:
-    from .download_manager import DEFAULT_COMMON_FOLDERS, DownloadManager
+    from .download_manager import DEFAULT_COMMON_FOLDERS, DownloadManager, error_status
 except ImportError:
-    from download_manager import DEFAULT_COMMON_FOLDERS, DownloadManager
+    from download_manager import DEFAULT_COMMON_FOLDERS, DownloadManager, error_status
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +43,9 @@ class DownloadService:
         self._app.router.add_get("/downloads", self.handle_downloads)
         self._app.router.add_get("/progress/{download_id}", self.handle_progress)
         self._app.router.add_delete("/download/{download_id}", self.handle_cancel)
+        self._app.router.add_get("/files", self.handle_files)
+        self._app.router.add_delete("/files", self.handle_delete_file)
+        self._app.router.add_post("/upload", self.handle_upload)
         self._app.router.add_options("/{tail:.*}", self.handle_options)
 
     async def handle_options(self, request: web.Request) -> web.Response:
@@ -74,7 +77,7 @@ class DownloadService:
             overwrite=bool(payload.get("overwrite")),
         )
         if not ok:
-            return self._json_response({"error": error}, status=400 if "already exists" in (error or "") else 400)
+            return self._json_response({"error": error}, status=error_status(error))
         return self._json_response(entry.to_dict(), status=202)
 
     async def handle_downloads(self, request: web.Request) -> web.Response:
@@ -92,9 +95,33 @@ class DownloadService:
         download_id = request.match_info["download_id"]
         ok, error = self.manager.cancel_download(download_id)
         if not ok:
-            status = 404 if error and "not found" in error else 409
-            return self._json_response({"error": error}, status=status)
+            return self._json_response({"error": error}, status=error_status(error))
         return self._json_response({"status": "cancellation requested"})
+
+    async def handle_files(self, request: web.Request) -> web.Response:
+        loop = asyncio.get_running_loop()
+        data, error = await loop.run_in_executor(None, self.manager.list_files, request.query.get("folder", ""))
+        if error:
+            return self._json_response({"error": error}, status=error_status(error))
+        return self._json_response(data)
+
+    async def handle_delete_file(self, request: web.Request) -> web.Response:
+        ok, error = self.manager.delete_file(request.query.get("folder", ""), request.query.get("path", ""))
+        if not ok:
+            return self._json_response({"error": error}, status=error_status(error))
+        return self._json_response({"status": "deleted"})
+
+    async def handle_upload(self, request: web.Request) -> web.Response:
+        data, error = await self.manager.save_upload(
+            folder_name=request.query.get("folder", ""),
+            filename=request.query.get("filename", ""),
+            chunks=request.content.iter_chunked(1 << 20),
+            expected_size=request.content_length,
+            overwrite=request.query.get("overwrite") in ("1", "true"),
+        )
+        if error:
+            return self._json_response({"error": error}, status=error_status(error))
+        return self._json_response(data, status=201)
 
     async def start(self) -> None:
         runner = web.AppRunner(self._app)

@@ -9,6 +9,9 @@ A ComfyUI custom-node extension that lets WebUI users download models directly i
 - Optional custom filename override.
 - Live progress bar with bytes downloaded, total size, speed, and ETA.
 - List of active and completed downloads, with cancel support.
+- **Upload** tab: pick one or more model files from your own computer and stream them into a model folder, with progress, cancel, and an overwrite option. Uploads stream to disk, so they are not limited by ComfyUI's `--max-upload-size`.
+- **Files** tab: browse each model folder (including subfolders), filter and sort by name, size or date, and delete old models. Delete asks for a second click to confirm. Files that a download or upload is still writing can't be deleted.
+- After an upload or delete, node model dropdowns are refreshed automatically.
 - Routes are registered directly on ComfyUI's own web server, so remote WebUI users can reach them without exposing a separate port.
 - Optional standalone `aiohttp` service still available for development or local-only use.
 
@@ -87,6 +90,9 @@ These are served from the same host/port as ComfyUI:
 - `GET /api/model-downloader/downloads` — List all downloads.
 - `GET /api/model-downloader/progress/{download_id}` — Get one download.
 - `DELETE /api/model-downloader/download/{download_id}` — Cancel a download.
+- `GET /api/model-downloader/files?folder=loras` — List files in a model folder (recursive).
+- `DELETE /api/model-downloader/files?folder=loras&path=sdxl/old.safetensors` — Delete a file (`path` is relative to the folder).
+- `POST /api/model-downloader/upload?folder=loras&filename=my.safetensors&overwrite=0` — Upload a file. The request body is the raw file bytes (`Content-Type: application/octet-stream`), for example `curl --data-binary @my.safetensors -H "Content-Type: application/octet-stream" "http://host:8188/api/model-downloader/upload?folder=loras&filename=my.safetensors"`.
 
 ### Standalone service routes (legacy)
 
@@ -97,6 +103,9 @@ Available when the standalone service is running on its own port:
 - `GET /downloads`
 - `GET /progress/{download_id}`
 - `DELETE /download/{download_id}`
+- `GET /files`
+- `DELETE /files`
+- `POST /upload`
 
 All endpoints respond with JSON.
 
@@ -108,5 +117,8 @@ After ComfyUI loads the extension, a **Model Downloader** button appears in the 
 
 - Only `http://` and `https://` URLs are accepted.
 - Filenames are sanitized to prevent directory traversal.
+- The file manager can only list and delete files inside `models/<folder>`. Folder names and file paths containing `..`, absolute paths or drive letters are rejected.
+- **Anyone who can reach your ComfyUI can now delete and upload model files.** Only expose ComfyUI to people you trust.
+- If ComfyUI is behind a reverse proxy (nginx, Cloudflare, etc.), large uploads may be rejected by the proxy's own body-size limit (e.g. nginx `client_max_body_size`).
 - The standalone service binds to `127.0.0.1` by default; change `COMFY_MODEL_DL_HOST` only if you understand the network exposure implications.
 - Because the new ComfyUI routes run through ComfyUI's own server, they inherit whatever authentication / exposure ComfyUI already has. Add authentication if your ComfyUI instance is exposed to untrusted users.
