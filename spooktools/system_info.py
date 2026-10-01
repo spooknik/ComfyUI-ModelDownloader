@@ -39,6 +39,7 @@ STARTED_AT = time.time()
 
 CGROUP_ROOT = Path("/sys/fs/cgroup")
 PROC_SELF_CGROUP = Path("/proc/self/cgroup")
+ZFS_ARCSTATS = Path("/proc/spl/kstat/zfs/arcstats")
 DISK_ROLES = ("models", "output", "input", "temp")
 
 _cache: dict[str, Any] = {}
@@ -269,6 +270,23 @@ def cpu_stats(limits: dict[str, Any] | None) -> dict[str, Any]:
     }
 
 
+def zfs_arc(path: Path | None = None) -> dict[str, int] | None:
+    """ZFS ARC size and how much of it ZFS would give back, or None without ZFS (or off Linux).
+
+    Unlike the page cache, the ARC is not part of the kernel's MemAvailable, so on a ZFS host (TrueNAS, Proxmox,
+    ...) "used" RAM includes tens of GB of cache that ZFS shrinks down to `c_min` when programs need memory.
+    The kstat file is global, so containers see the host's ARC.
+    """
+    values: dict[str, int] = {}
+    for line in (_read(path or ZFS_ARCSTATS) or "").splitlines():
+        parts = line.split()
+        if len(parts) == 3 and parts[0] in ("size", "c_min") and parts[2].isdigit():
+            values[parts[0]] = int(parts[2])
+    if "size" not in values:
+        return None
+    return {"size": values["size"], "reclaimable": max(values["size"] - values.get("c_min", 0), 0)}
+
+
 def ram_stats(limits: dict[str, Any] | None) -> dict[str, Any]:
     vm = psutil.virtual_memory()
     swap = _attempt(psutil.swap_memory)
@@ -276,11 +294,16 @@ def ram_stats(limits: dict[str, Any] | None) -> dict[str, Any]:
     cgroup = None
     if limits and limits["memory_limit"]:
         cgroup = {k: limits[k] for k in ("memory_limit", "memory_used", "memory_percent")}
+    arc = _attempt(zfs_arc) if sys.platform.startswith("linux") else None
+    # Count the reclaimable part of the ZFS ARC as available, like the page cache already is.
+    available = min(vm.total, vm.available + arc["reclaimable"]) if arc else vm.available
+    used = vm.total - available
     return {
         "total": vm.total,
-        "used": vm.total - vm.available,
-        "available": vm.available,
-        "percent": vm.percent,
+        "used": used,
+        "available": available,
+        "percent": round(100 * used / vm.total, 1) if vm.total else vm.percent,
+        "zfs_arc": arc,
         "swap_total": swap.total if swap else None,
         "swap_used": swap.used if swap else None,
         "swap_percent": swap.percent if swap else None,

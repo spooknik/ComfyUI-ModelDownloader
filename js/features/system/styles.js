@@ -22,7 +22,7 @@ const CSS = `
     .spk-bar-fill { height: 100%; background: #2d7bf6; }
     .spk-bar-fill.warn, .spk-cores > span.warn { background: #f59f00; }
     .spk-bar-fill.crit, .spk-cores > span.crit { background: #e03131; }
-    .spk-meter-sub { font-size: 11px; color: #888; margin-top: 3px; }
+    .spk-meter-sub { font-size: 11px; color: #888; margin-top: 3px; white-space: pre-line; }
     .spk-cores { display: flex; align-items: flex-end; gap: 1px; height: 16px; margin-top: 6px; padding: 1px; background: #202020; border-radius: 2px; }
     .spk-cores > span { flex: 1; min-width: 1px; min-height: 1px; background: #2d7bf6; }
     .spk-sys-note { font-size: 11px; color: #888; font-style: italic; margin: 0 0 8px; }

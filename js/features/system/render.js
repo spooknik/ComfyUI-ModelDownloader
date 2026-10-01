@@ -126,15 +126,21 @@ function cpuCard(cpu) {
 }
 
 function ramCard(ram) {
+    const arc = ram.zfs_arc;
     const extras = [
         `${formatSize(ram.available)} available`,
         isNum(ram.swap_total) && ram.swap_total > 0 ? `swap ${formatUsedOfTotal(ram.swap_used, ram.swap_total)}` : null,
     ].filter(Boolean);
+    // Used/available already treat the reclaimable ARC as free; say so, since `free`/`htop` count it as used.
+    const arcLine =
+        arc && isNum(arc.size)
+            ? `ZFS cache ${formatSize(arc.size)} (${formatSize(arc.reclaimable)} reclaimable, counted as available)`
+            : null;
     let body = meter({
         label: ram.cgroup ? "Host" : "Used",
         value: `${formatUsedOfTotal(ram.used, ram.total)} · ${pct(ram.percent)}`,
         percent: ram.percent,
-        sub: extras.join(" · "),
+        sub: [extras.join(" · "), arcLine].filter(Boolean).join("\n"),
     });
     if (ram.cgroup) {
         const c = ram.cgroup;

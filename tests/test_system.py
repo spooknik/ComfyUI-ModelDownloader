@@ -485,3 +485,60 @@ def test_restart_refuses_cross_site_requests(make_client, monkeypatch, restarts)
             assert len(restarts) == 1
 
     asyncio.run(scenario())
+
+
+ARCSTATS = """13 1 0x01 147 39984 6178470347 1235553366553
+name                            type data
+hits                            4    90281234
+size                            4    32749125632
+c                               4    33000000000
+c_min                           4    2147483648
+c_max                           4    65000000000
+"""
+
+
+def test_zfs_arc_parsing(tmp_path: Path):
+    stats = tmp_path / "arcstats"
+    stats.write_text(ARCSTATS)
+    assert system_info.zfs_arc(stats) == {"size": 32749125632, "reclaimable": 32749125632 - 2147483648}
+    assert system_info.zfs_arc(tmp_path / "missing") is None  # No ZFS.
+    stats.write_text("13 1 0x01\nname type data\nhits 4 5\n")
+    assert system_info.zfs_arc(stats) is None
+    stats.write_text("name type data\nsize 4 1000\nc_min 4 4000\n")  # ARC below its minimum: nothing to give back.
+    assert system_info.zfs_arc(stats) == {"size": 1000, "reclaimable": 0}
+
+
+def _fake_vm(total: int, available: int) -> types.SimpleNamespace:
+    return types.SimpleNamespace(total=total, available=available, percent=round(100 * (total - available) / total, 1))
+
+
+def test_ram_counts_reclaimable_zfs_arc_as_available(tmp_path: Path, monkeypatch):
+    """TrueNAS-style host: 64 GiB RAM, 30.5 GiB ARC (2 GiB minimum) that MemAvailable doesn't include."""
+    gib = 1 << 30
+    stats = tmp_path / "arcstats"
+    stats.write_text(ARCSTATS)
+    monkeypatch.setattr(system_info, "ZFS_ARCSTATS", stats)
+    monkeypatch.setattr(system_info, "sys", types.SimpleNamespace(platform="linux"))
+    monkeypatch.setattr(system_info.psutil, "virtual_memory", lambda: _fake_vm(64 * gib, 10 * gib))
+
+    ram = system_info.ram_stats(None)
+    reclaimable = 32749125632 - 2147483648
+    assert ram["zfs_arc"] == {"size": 32749125632, "reclaimable": reclaimable}
+    assert ram["available"] == 10 * gib + reclaimable
+    assert ram["used"] == 64 * gib - ram["available"]
+    assert ram["percent"] == round(100 * ram["used"] / (64 * gib), 1)
+
+    # Never more available than installed, even if a future kernel already counted the ARC.
+    monkeypatch.setattr(system_info.psutil, "virtual_memory", lambda: _fake_vm(64 * gib, 60 * gib))
+    ram = system_info.ram_stats(None)
+    assert ram["available"] == 64 * gib and ram["used"] == 0
+
+
+def test_ram_without_zfs_unchanged(tmp_path: Path, monkeypatch):
+    gib = 1 << 30
+    monkeypatch.setattr(system_info, "ZFS_ARCSTATS", tmp_path / "missing")
+    monkeypatch.setattr(system_info, "sys", types.SimpleNamespace(platform="linux"))
+    monkeypatch.setattr(system_info.psutil, "virtual_memory", lambda: _fake_vm(64 * gib, 40 * gib))
+    ram = system_info.ram_stats(None)
+    assert ram["zfs_arc"] is None
+    assert ram["available"] == 40 * gib and ram["used"] == 24 * gib and ram["percent"] == 37.5

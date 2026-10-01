@@ -81,7 +81,7 @@ The **System** tab is a live resource monitor for the machine ComfyUI runs on. I
 
 - **GPU**: for each GPU, the load, VRAM used out of total, temperature, power draw and limit, and fan speed. Under the VRAM bar, it shows how much of that PyTorch, and so ComfyUI, holds (reserved and allocated). These figures come from the `nvidia-ml-py` package, which is listed in `requirements.txt` (`pip install -r requirements.txt`). Without it, only PyTorch's VRAM figures are shown.
 - **CPU**: the model, core and thread counts, total load with a small per-core strip, and the load average on Linux and macOS.
-- **RAM**: used out of total, swap, and ComfyUI's own memory use.
+- **RAM**: used out of total, swap, and ComfyUI's own memory use. On ZFS hosts (TrueNAS, Proxmox, ...) the ZFS cache (ARC) is shown separately, and the part ZFS would give back counts as available. Linux reports it as used, so tools like `free` and `htop` show more RAM in use than the panel does.
 - **Disks**: free space for the models, output, input and temp directories. Directories on the same filesystem share one bar, labelled with all of them. `--base-directory`, `--output-directory` and similar options are respected.
 - **Versions** (collapsed): ComfyUI, the frontend, Python, PyTorch, CUDA, cuDNN, xformers, the NVIDIA driver, the OS, and whether ComfyUI runs in a container.
 - The top line shows uptime and the queue (running and pending jobs). Bars turn amber above 75% and red above 90%.
