@@ -217,7 +217,8 @@ def load_plugin():
 def test_loader_without_promptserver(monkeypatch, load_plugin):
     monkeypatch.setitem(sys.modules, "server", None)  # `import server` raises ImportError
     module = load_plugin("ComfyUI-SpookTools")
-    assert module.NODE_CLASS_MAPPINGS == {} and module.NODE_DISPLAY_NAME_MAPPINGS == {}
+    assert set(module.NODE_CLASS_MAPPINGS) == {"SpookIncognitoPreview"}
+    assert set(module.NODE_DISPLAY_NAME_MAPPINGS) == {"SpookIncognitoPreview"}
     assert Path(module.WEB_DIRECTORY) == REPO_ROOT / "js"
     assert "ComfyUI-SpookTools.spooktools" not in sys.modules  # Nothing server-side was imported.
 

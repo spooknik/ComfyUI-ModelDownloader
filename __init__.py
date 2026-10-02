@@ -13,8 +13,31 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-NODE_CLASS_MAPPINGS: dict[str, type] = {}
-NODE_DISPLAY_NAME_MAPPINGS: dict[str, str] = {}
+
+def _load_incognito_preview():
+    """Import the sibling ``incognito_preview`` module.
+
+    Works both when this folder is a real package (ComfyUI) or imported as a
+    bare top-level module (pytest collecting ``__init__.py`` directly). The
+    module has no heavy deps (torch/PIL are lazy), so loading it here keeps
+    test/CI environments free of a GPU stack.
+    """
+    try:
+        from . import incognito_preview as mod  # package context
+    except ImportError:
+        import importlib.util
+
+        path = Path(__file__).resolve().with_name("incognito_preview.py")
+        spec = importlib.util.spec_from_file_location("incognito_preview", path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+    return mod.NODE_CLASS_MAPPINGS, mod.NODE_DISPLAY_NAME_MAPPINGS
+
+
+_INCOGNITO_CLASS_MAPPINGS, _INCOGNITO_DISPLAY_MAPPINGS = _load_incognito_preview()
+
+NODE_CLASS_MAPPINGS: dict[str, type] = dict(_INCOGNITO_CLASS_MAPPINGS)
+NODE_DISPLAY_NAME_MAPPINGS: dict[str, str] = dict(_INCOGNITO_DISPLAY_MAPPINGS)
 WEB_DIRECTORY = os.path.join(os.path.dirname(os.path.realpath(__file__)), "js")
 
 
