@@ -54,6 +54,23 @@ def test_http_endpoints(comfy: Path, make_client):
             files = {f["path"]: f["size"] for f in (await resp.json())["files"]}
             assert files["up.safetensors"] == len(payload)
 
+            resp = await client.post(
+                f"{API}/files/rename", json={"folder": "loras", "path": "up.safetensors", "new_path": "a.safetensors"}
+            )
+            assert resp.status == 409
+            resp = await client.post(
+                f"{API}/files/rename", json={"folder": "loras", "path": "up.safetensors", "new_path": "re.safetensors"}
+            )
+            assert resp.status == 200, await resp.text()
+            resp = await client.post(
+                f"{API}/files/rename", json={"folder": "loras", "path": "re.safetensors", "new_path": "up.safetensors"}
+            )
+            assert resp.status == 200
+            resp = await client.post(
+                f"{API}/files/rename", data="not json", headers={"Content-Type": "application/json"}
+            )
+            assert resp.status == 400
+
             resp = await client.delete(f"{API}/files", params={"folder": "loras", "path": "up.safetensors"})
             assert resp.status == 200
             resp = await client.delete(f"{API}/files", params={"folder": "loras", "path": "up.safetensors"})

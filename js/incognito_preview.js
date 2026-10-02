@@ -1,65 +1,124 @@
 // Frontend side of the "Incognito Preview" node.
 //
-// The backend sends the image as base64 data URIs in the node's UI payload
-// (key `incognito_images`) instead of saving a PNG to the temp folder. To
-// render it we have to cover both frontends, which look in slightly different
-// places, so we seed all of them:
+// The backend pushes PNG data URIs over the websocket as a custom
+// `spooktools.incognito_preview` event ({ node: <execution id>, images: [...] })
+// instead of saving a file or putting them in the node's `ui` output.
 //
-//   - Classic LiteGraph: reads `node.imgs` directly.
-//   - Vue: the node image preview reads `app.nodePreviewImages[locator]`
-//     *before* falling back to building `/view?...` URLs from
-//     `output.images`. Our node emits no files, so any `/view` fallback would
-//     point at a non-existent file; writing the data URIs here makes the
-//     renderer pick them up instead. This mirrors webcamCapture's out-of-band
-//     capture path (`setNodePreviewsByNodeId` writes into this same map).
-//
-// The `executed` handler stores `detail.output` *before* calling
-// `node.onExecuted(output)`, so by the time we run, the store already holds an
-// `output.images` entry that would otherwise win. Overwriting the map entries
-// reclaims priority for our in-memory previews. No media asset is ever created
-// server-side; nothing goes through /view.
+// We draw them in our own DOM widget rather than feeding ComfyUI's built-in
+// preview (`node.imgs` / `app.nodePreviewImages`): the frontend rebuilds those
+// from `output.images` (/view URLs of saved files) and from transient latent
+// previews, so anything we write there is ignored or wiped on the next draw.
+// A DOM widget is rendered as-is by both the LiteGraph canvas and Vue nodes.
 
+import { api } from "../../scripts/api.js";
 import { app } from "../../scripts/app.js";
 
-function setPreviews(node, uris) {
-    // Seed every lookup shape the frontends use:
-    //   - bare id (classic "app.nodePreviewImages[id]")
-    //   - string id
-    //   - locator "id:0" used by the current Vue renderer for root-graph nodes
-    const map = app?.nodePreviewImages;
-    if (map && typeof map === "object") {
-        for (const k of [node.id, String(node.id), `${node.id}:0`]) map[k] = uris;
-    }
+const NODE_TYPE = "SpookIncognitoPreview";
+const EVENT = "spooktools.incognito_preview";
+const MIN_HEIGHT = 120;
+const MAX_AUTO_HEIGHT = 512;
 
-    // Classic LiteGraph path: decoded Image elements on the node.
+function nodeForExecutionId(id) {
+    // Execution ids are "<node>" for the root graph and "<subgraph node>:<inner node>…" inside subgraphs.
+    let graph = app.graph;
+    let node = null;
+    for (const part of String(id).split(":")) {
+        node = graph?.getNodeById?.(Number(part)) ?? null;
+        if (!node) return null;
+        graph = node.subgraph;
+    }
+    return node;
+}
+
+function createPreviewWidget(node) {
+    const root = document.createElement("div");
+    Object.assign(root.style, {
+        display: "flex",
+        flexDirection: "column",
+        width: "100%",
+        height: "100%",
+        boxSizing: "border-box",
+        overflow: "hidden",
+    });
+    const grid = document.createElement("div");
+    Object.assign(grid.style, { flex: "1", minHeight: "0", display: "grid", gap: "2px" });
+    const caption = document.createElement("div");
+    Object.assign(caption.style, {
+        flex: "none",
+        font: "11px sans-serif",
+        color: "#999",
+        textAlign: "center",
+        padding: "2px 0",
+    });
+    caption.textContent = "Run the workflow to preview (nothing is saved)";
+    root.append(grid, caption);
+
+    const widget = node.addDOMWidget("incognito_preview", "spk_incognito_preview", root, {
+        serialize: false,
+        hideOnZoom: false,
+        getMinHeight: () => MIN_HEIGHT,
+    });
+    node.spkIncognito = { widget, grid, caption, grown: false };
+}
+
+function showImages(node, uris) {
+    if (!node.spkIncognito) createPreviewWidget(node);
+    const state = node.spkIncognito;
+
+    const cols = Math.ceil(Math.sqrt(uris.length));
+    state.grid.style.gridTemplateColumns = `repeat(${cols}, minmax(0, 1fr))`;
+    state.grid.style.gridAutoRows = "minmax(0, 1fr)";
+
     const imgs = uris.map((src) => {
-        const img = new Image();
-        img.onload = () => {
-            node.setSizeForImage?.();
-            app.graph?.setDirtyCanvas?.(true, true);
-        };
+        const img = document.createElement("img");
+        Object.assign(img.style, { width: "100%", height: "100%", objectFit: "contain", minHeight: "0" });
         img.src = src;
         return img;
     });
-    node.imgs = imgs;
+    state.grid.replaceChildren(...imgs);
 
-    app.graph?.setDirtyCanvas?.(true, true);
+    imgs[0].addEventListener(
+        "load",
+        () => {
+            const { naturalWidth: w, naturalHeight: h } = imgs[0];
+            state.caption.textContent = uris.length > 1 ? `${uris.length} images · ${w}×${h}` : `${w}×${h}`;
+            // Grow the node to fit the first preview once; after that, respect the user's sizing.
+            if (!state.grown && w && h) {
+                state.grown = true;
+                const rows = Math.ceil(uris.length / cols);
+                const want = Math.min(((node.size[0] - 20) / cols) * (h / w) * rows, MAX_AUTO_HEIGHT);
+                const height = node.computeSize()[1] - MIN_HEIGHT + want;
+                if (height > node.size[1]) node.setSize([node.size[0], height]);
+            }
+            app.graph?.setDirtyCanvas?.(true, true);
+        },
+        { once: true },
+    );
 }
 
 app.registerExtension({
     name: "ComfyUI.SpookTools.IncognitoPreview",
+
+    async setup() {
+        api.addEventListener(EVENT, ({ detail }) => {
+            const uris = (detail?.images || []).filter((u) => typeof u === "string" && u.startsWith("data:image/"));
+            if (!uris.length) return;
+            const node = nodeForExecutionId(detail.node);
+            if (!node) {
+                console.warn(`[SpookTools] Incognito preview: node ${detail.node} not found in the open graph`);
+                return;
+            }
+            showImages(node, uris);
+        });
+    },
+
     async beforeRegisterNodeDef(nodeType, nodeData) {
-        if (nodeData?.name !== "SpookIncognitoPreview") return;
-
-        const onExecuted = nodeType.prototype.onExecuted;
-        nodeType.prototype.onExecuted = function (output) {
-            onExecuted?.apply(this, arguments);
-
-            const uris = output?.incognito_images;
-            if (!Array.isArray(uris) || !uris.length) return;
-
-            const valid = uris.filter((u) => typeof u === "string" && u.startsWith("data:image"));
-            if (valid.length) setPreviews(this, valid);
+        if (nodeData?.name !== NODE_TYPE) return;
+        const onNodeCreated = nodeType.prototype.onNodeCreated;
+        nodeType.prototype.onNodeCreated = function () {
+            const result = onNodeCreated?.apply(this, arguments);
+            createPreviewWidget(this);
+            return result;
         };
     },
 });

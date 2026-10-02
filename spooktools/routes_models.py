@@ -56,6 +56,19 @@ def routes(manager: DownloadManager) -> list[web.RouteDef]:
             return error_response(error)
         return json_response({"status": "deleted"})
 
+    async def api_rename_file(request: web.Request) -> web.Response:
+        payload, bad_request = await read_json(request)
+        if bad_request is not None:
+            return bad_request
+        if not isinstance(payload, dict):
+            return json_response({"error": "Invalid JSON"}, status=400)
+        ok, error = manager.rename_file(
+            str(payload.get("folder", "")), str(payload.get("path", "")), str(payload.get("new_path", ""))
+        )
+        if not ok:
+            return error_response(error)
+        return json_response({"status": "renamed", "path": payload["new_path"]})
+
     async def api_upload(request: web.Request) -> web.Response:
         # Raw request body, streamed: request.content bypasses ComfyUI's --max-upload-size (client_max_size),
         # which only applies to fully-buffered reads.
@@ -120,6 +133,7 @@ def routes(manager: DownloadManager) -> list[web.RouteDef]:
         web.delete("/download/{download_id}", api_cancel),
         web.get("/files", api_files),
         web.delete("/files", api_delete_file),
+        web.post("/files/rename", api_rename_file),
         web.post("/upload", api_upload),
         # "/upload/start" must stay ahead of the "/upload/{upload_id}" routes.
         web.post("/upload/start", api_upload_start),

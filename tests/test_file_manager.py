@@ -57,6 +57,54 @@ def test_delete_refuses_directory(comfy: Path):
     assert (comfy / "models" / "loras" / "sdxl").is_dir()
 
 
+def test_rename_file(comfy: Path):
+    mgr = DownloadManager(comfy)
+    loras = comfy / "models" / "loras"
+    ok, error = mgr.rename_file("loras", "a.safetensors", "renamed.safetensors")
+    assert ok, error
+    assert (loras / "renamed.safetensors").read_bytes() == b"a" * 10
+    assert not (loras / "a.safetensors").exists()
+    # Moving into a new subfolder creates it.
+    ok, error = mgr.rename_file("loras", "renamed.safetensors", "flux/moved.safetensors")
+    assert ok, error
+    assert (loras / "flux" / "moved.safetensors").is_file()
+
+
+def test_rename_refuses_overwrite_and_missing(comfy: Path):
+    mgr = DownloadManager(comfy)
+    ok, error = mgr.rename_file("loras", "a.safetensors", "sdxl/b.safetensors")
+    assert not ok and error_status(error) == 409
+    assert (comfy / "models" / "loras" / "sdxl" / "b.safetensors").read_bytes() == b"b" * 20
+    ok, error = mgr.rename_file("loras", "missing.safetensors", "x.safetensors")
+    assert not ok and error_status(error) == 404
+    ok, error = mgr.rename_file("loras", "sdxl", "sdxl2")  # directories are not renamed
+    assert not ok and error_status(error) == 404
+
+
+def test_rename_case_only(comfy: Path):
+    mgr = DownloadManager(comfy)
+    ok, error = mgr.rename_file("loras", "a.safetensors", "A.safetensors")
+    assert ok, error
+    assert [p.name for p in (comfy / "models" / "loras").glob("*.safetensors")] == ["A.safetensors"]
+
+
+@pytest.mark.parametrize(
+    "new_path",
+    ["../../main.py", "..\\escape.bin", "/etc/x", "C:/x", "", ".hidden2", "sdxl/.x", "bad?.bin", " x.bin", "x.bin "],
+)
+def test_rename_rejects_bad_targets(comfy: Path, new_path: str):
+    ok, error = DownloadManager(comfy).rename_file("loras", "a.safetensors", new_path)
+    assert not ok and error_status(error) == 400, error
+    assert (comfy / "models" / "loras" / "a.safetensors").exists()
+    assert (comfy / "main.py").read_text() == "# outside models"
+
+
+def test_rename_rejects_traversal_source(comfy: Path):
+    ok, error = DownloadManager(comfy).rename_file("loras", "../../main.py", "stolen.py")
+    assert not ok and error_status(error) == 400
+    assert (comfy / "main.py").exists()
+
+
 def test_upload_and_overwrite(comfy: Path):
     mgr = DownloadManager(comfy)
     data, error = asyncio.run(mgr.save_upload("checkpoints", "new.safetensors", _chunks(b"12", b"345"), 5))
@@ -117,6 +165,10 @@ def test_active_upload_blocks_delete_and_listing_marks_it(comfy: Path):
         task = asyncio.create_task(mgr.save_upload("loras", "a.safetensors", slow(), overwrite=True))
         await asyncio.sleep(0.1)
         ok, error = mgr.delete_file("loras", "a.safetensors")
+        assert not ok and error_status(error) == 409
+        ok, error = mgr.rename_file("loras", "a.safetensors", "moved.safetensors")
+        assert not ok and error_status(error) == 409
+        ok, error = mgr.rename_file("loras", "sdxl/b.safetensors", "a.safetensors")  # onto the upload target
         assert not ok and error_status(error) == 409
         listing, _ = mgr.list_files("loras")
         active = {f["path"] for f in listing["files"] if f["active"]}

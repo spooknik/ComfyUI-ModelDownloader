@@ -47,6 +47,10 @@ const CSS = `
     .spk-delete { flex: none; padding: 4px 10px; font-size: 11px; background: #2a2a2a; color: #ff6b6b; border: 1px solid #553333; border-radius: 4px; cursor: pointer; }
     .spk-delete:hover { background: #3a2020; }
     .spk-delete.armed { background: #c92a2a; color: #fff; border-color: #c92a2a; }
+    .spk-rename { flex: none; padding: 4px 10px; font-size: 11px; background: #2a2a2a; color: #ccc; border: 1px solid #444; border-radius: 4px; cursor: pointer; }
+    .spk-rename:hover { background: #333; color: #fff; }
+    .spk-rename-save { color: #8ce99a; border-color: #2f5535; }
+    .spk-file .spk-rename-input { margin-bottom: 0; font-size: 12px; }
     .spk-delete:disabled { color: #666; border-color: #333; background: #1f1f1f; cursor: not-allowed; }
 `;
 

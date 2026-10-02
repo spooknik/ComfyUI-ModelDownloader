@@ -409,6 +409,38 @@ class DownloadManager:
         logger.info("Deleted model file %s", path)
         return True, None
 
+    def rename_file(self, folder_name: str, relative_path: str, new_relative_path: str) -> tuple[bool, str | None]:
+        """Rename (or move into a subfolder of) a file within one model folder. Never overwrites."""
+        self.expire_upload_sessions()
+        try:
+            src = self._resolve_file(folder_name, relative_path)
+            dst = self._resolve_file(folder_name, new_relative_path)
+        except ValueError as exc:
+            return False, str(exc)
+        new_parts = PurePosixPath(new_relative_path.replace("\\", "/")).parts
+        if any(re.search(r'[*?"<>|\x00-\x1f]', part) for part in new_parts):
+            return False, 'Invalid file name: it may not contain * ? " < > |'
+        if any(part.startswith(".") or part != part.strip() for part in new_parts):
+            # Listing skips dot-files, so the file would seem to vanish; Windows drops trailing spaces/dots.
+            return False, "Invalid file name: parts may not start with '.' or have leading/trailing spaces"
+        if str(src) == str(dst):  # Not Path ==, which ignores case on Windows and would block case-only renames.
+            return False, "New name is the same as the old one"
+        active = self._active_paths()
+        if src in active or dst in active:
+            return False, "Cannot rename a file while a transfer is in progress"
+        if not src.is_file() and not src.is_symlink():
+            return False, "File not found"
+        # A case-only rename on a case-insensitive filesystem sees dst as existing, but it is the same file.
+        if (dst.exists() or dst.is_symlink()) and not _same_file(src, dst):
+            return False, f"A file named {new_relative_path} already exists"
+        try:
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            os.rename(src, dst)
+        except OSError as exc:
+            return False, f"Rename failed: {exc}"
+        logger.info("Renamed model file %s -> %s", src, dst)
+        return True, None
+
     async def save_upload(
         self,
         folder_name: str,
@@ -642,3 +674,9 @@ class DownloadManager:
             self._drop_upload_session(session)
         return True, None
 
+
+def _same_file(a: Path, b: Path) -> bool:
+    try:
+        return os.path.samefile(a, b)
+    except OSError:
+        return False

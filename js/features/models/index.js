@@ -8,7 +8,7 @@ import { UploadTab } from "./upload_tab.js";
 export function registerModelTabs(panel, app) {
     const folders = new FolderStore();
 
-    // After an upload (folder given) or a delete (null): refresh the matching file listing and the model dropdowns.
+    // After an upload (folder given) or a delete/rename (null): refresh that file listing and the model dropdowns.
     const onFilesChanged = (folder) => {
         files.reloadIfShowing(folder);
         // Refresh model dropdowns on nodes so new/removed files show up without a page reload.

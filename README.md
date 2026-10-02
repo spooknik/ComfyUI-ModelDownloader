@@ -9,9 +9,9 @@ Formerly **ComfyUI-ModelDownloader**. See [Upgrading from ComfyUI-ModelDownloade
 - A floating **Spook Tools** button opens the tools panel. You can drag the button anywhere with mouse, touch or pen, and each browser remembers where you left it. The panel opens next to the button and always stays on-screen. **Reset button position** in the panel footer puts the button back in the top-right corner.
 - **Download** tab: paste any direct `http`/`https` model URL, pick a destination folder from the ComfyUI model directories (`checkpoints`, `loras`, `vae`, `controlnet`, etc.), and optionally override the filename. A live progress bar shows bytes downloaded, total size, speed and ETA. Active and finished downloads are listed, and active ones can be cancelled.
 - **Upload** tab: pick one or more model files from your own computer and send them into a model folder, with progress, cancel and an overwrite option. Files go up in 32 MB chunks. If the connection drops or a proxy times out, the chunk is retried automatically, so multi-GB uploads survive flaky links and per-request proxy limits. Uploads are not limited by ComfyUI's `--max-upload-size`.
-- **Files** tab: browse each model folder (including subfolders), filter and sort by name, size or date, and delete old models. Delete needs a second click to confirm. You can't delete a file while a download or upload is still writing it.
+- **Files** tab: browse each model folder (including subfolders), filter and sort by name, size or date, rename files and delete old models. Rename edits the name in place (type `sub/name.safetensors` to move a file into a subfolder) and never overwrites an existing file. Delete needs a second click to confirm. You can't rename or delete a file while a download or upload is still writing it.
 - **Gallery** tab: a bulk image manager for ComfyUI's `output` (generated) and `input` (imported) folders. Browse thumbnails, select many files at once, download them as one zip or delete them. See [Gallery](#gallery).
-- After an upload or delete, node model dropdowns refresh automatically.
+- After an upload, rename or delete, node model dropdowns refresh automatically.
 - All routes run on ComfyUI's own web server, so remote users can reach them without you exposing another port.
 
 ## Installation
@@ -128,6 +128,7 @@ These are served from the same host and port as ComfyUI. Every route is also ava
 - `DELETE /api/spooktools/download/{download_id}`: cancel a download.
 - `GET /api/spooktools/files?folder=loras`: list the files in a model folder, recursively.
 - `DELETE /api/spooktools/files?folder=loras&path=sdxl/old.safetensors`: delete a file. `path` is relative to the folder.
+- `POST /api/spooktools/files/rename` with JSON `{"folder", "path", "new_path"}`: rename a file inside the same model folder. `new_path` may include subfolders, which are created. It returns 409 if `new_path` already exists.
 - `POST /api/spooktools/upload?folder=loras&filename=my.safetensors&overwrite=0`: upload a file in a single request. The request body is the raw file bytes (`Content-Type: application/octet-stream`). For example: `curl --data-binary @my.safetensors -H "Content-Type: application/octet-stream" "http://host:8188/api/spooktools/upload?folder=loras&filename=my.safetensors"`.
 - Chunked uploads (used by the browser panel):
   - `POST /api/spooktools/upload/start` with JSON `{"folder", "filename", "size", "overwrite"}` returns an `upload_id`.
@@ -162,7 +163,7 @@ The server code is in the `spooktools/` package. `spooktools/routes.py` register
 
 - Only `http://` and `https://` download URLs are accepted.
 - Filenames are sanitized to prevent directory traversal.
-- The file manager can only list and delete files inside `models/<folder>`. Folder names and file paths that contain `..`, absolute paths or drive letters are rejected.
+- The file manager can only list, rename and delete files inside `models/<folder>`. Folder names and file paths that contain `..`, absolute paths or drive letters are rejected.
 - **Anyone who can reach your ComfyUI can delete and upload model files.** Only expose ComfyUI to people you trust.
 - Other websites you visit can't use your browser to call these endpoints (CSRF). State-changing requests marked `Sec-Fetch-Site: cross-site` are refused, and POSTs must send `Content-Type: application/json` (or `application/octet-stream` for uploads), which a page on another site can't send without a CORS preflight. Scripts and `curl` must set the Content-Type header.
 - **Anyone who can reach your ComfyUI can also view, download and delete everything in `output` and `input` through the gallery.** It can't reach files outside those two folders. Paths with `..`, absolute paths, drive letters and hidden names are rejected. Files are served with `X-Content-Type-Options: nosniff` and a sandboxing Content-Security-Policy, and only image, video and plain-text files are shown in the browser, so an uploaded HTML or SVG file can't run script on ComfyUI's origin.
