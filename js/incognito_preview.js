@@ -1,13 +1,50 @@
 // Frontend side of the "Incognito Preview" node.
 //
 // The backend sends the image as base64 data URIs in the node's UI payload
-// (key `incognito_images`) instead of saving a PNG to the temp folder. This
-// extension stores those data URIs on `node.imgs`, which both the classic
-// LiteGraph renderer and the Vue frontend already know how to display for
-// output nodes — so the image appears on the node exactly like a normal
-// preview, without ever touching the server's media assets.
+// (key `incognito_images`) instead of saving a PNG to the temp folder. To
+// render it we have to cover both frontends, which look in slightly different
+// places, so we seed all of them:
+//
+//   - Classic LiteGraph: reads `node.imgs` directly.
+//   - Vue: the node image preview reads `app.nodePreviewImages[locator]`
+//     *before* falling back to building `/view?...` URLs from
+//     `output.images`. Our node emits no files, so any `/view` fallback would
+//     point at a non-existent file; writing the data URIs here makes the
+//     renderer pick them up instead. This mirrors webcamCapture's out-of-band
+//     capture path (`setNodePreviewsByNodeId` writes into this same map).
+//
+// The `executed` handler stores `detail.output` *before* calling
+// `node.onExecuted(output)`, so by the time we run, the store already holds an
+// `output.images` entry that would otherwise win. Overwriting the map entries
+// reclaims priority for our in-memory previews. No media asset is ever created
+// server-side; nothing goes through /view.
 
 import { app } from "../../scripts/app.js";
+
+function setPreviews(node, uris) {
+    // Seed every lookup shape the frontends use:
+    //   - bare id (classic "app.nodePreviewImages[id]")
+    //   - string id
+    //   - locator "id:0" used by the current Vue renderer for root-graph nodes
+    const map = app?.nodePreviewImages;
+    if (map && typeof map === "object") {
+        for (const k of [node.id, String(node.id), `${node.id}:0`]) map[k] = uris;
+    }
+
+    // Classic LiteGraph path: decoded Image elements on the node.
+    const imgs = uris.map((src) => {
+        const img = new Image();
+        img.onload = () => {
+            node.setSizeForImage?.();
+            app.graph?.setDirtyCanvas?.(true, true);
+        };
+        img.src = src;
+        return img;
+    });
+    node.imgs = imgs;
+
+    app.graph?.setDirtyCanvas?.(true, true);
+}
 
 app.registerExtension({
     name: "ComfyUI.SpookTools.IncognitoPreview",
@@ -19,25 +56,10 @@ app.registerExtension({
             onExecuted?.apply(this, arguments);
 
             const uris = output?.incognito_images;
-            if (!Array.isArray(uris) || uris.length === 0) return;
+            if (!Array.isArray(uris) || !uris.length) return;
 
-            const imgs = uris.map((src) => {
-                const img = new Image();
-                img.src = src;
-                return img;
-            });
-
-            // Hand the images to the standard node image renderer. This works
-            // because output nodes with `node.imgs` set get drawn by ComfyUI
-            // itself; we just point it at data URIs instead of /view URLs.
-            this.imgs = imgs;
-            if (typeof this.setSizeForImage === "function") {
-                this.setSizeForImage?.();
-            } else if (imgs.length) {
-                // Fallback for frontends without setSizeForImage.
-                imgs[0].onload = () => this.setSize?.(this.computeSize());
-            }
-            app.graph?.setDirtyCanvas?.(true, true);
+            const valid = uris.filter((u) => typeof u === "string" && u.startsWith("data:image"));
+            if (valid.length) setPreviews(this, valid);
         };
     },
 });

@@ -40,7 +40,7 @@ class SpookIncognitoPreview:
     OUTPUT_NODE = True
     CATEGORY = "SpookTools/image"
     DESCRIPTION = (
-        "Preview image without writing it to the output/temp folders â€” "
+        "Preview image without writing it to the output/temp folders - "
         "the pixels go straight to the browser as a data URI."
     )
 
@@ -80,4 +80,4 @@ def _u8():
 
 
 NODE_CLASS_MAPPINGS = {SpookIncognitoPreview.NODE_ID: SpookIncognitoPreview}
-NODE_DISPLAY_NAME_MAPPINGS = {SpookIncognitoPreview.NODE_ID: "Incognito Preview ðŸ•µ (no save)"}
+NODE_DISPLAY_NAME_MAPPINGS = {SpookIncognitoPreview.NODE_ID: "Incognito Preview (no save)"}
